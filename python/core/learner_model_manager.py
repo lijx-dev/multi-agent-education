@@ -1,0 +1,93 @@
+"""
+学习者模型管理器 -- 分离自BaseAgent的基础设施。
+负责学习者模型的创建、获取和持久化，实现业务逻辑与基础设施的分离。
+"""
+import logging
+from typing import Dict, Optional
+
+from core.learner_model import LearnerModel, BKTParams
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+class LearnerModelManager:
+    """
+    学习者模型管理器。
+
+    职责：
+    - 创建和管理学习者模型实例
+    - 提供统一的模型访问接口
+    - （未来扩展）支持模型的持久化和加载
+    """
+
+    def __init__(self, bkt_params: Optional[BKTParams] = None) -> None:
+        """
+        初始化学习者模型管理器。
+
+        Args:
+            bkt_params: BKT算法参数，None则使用默认配置
+        """
+        self._learner_models: Dict[str, LearnerModel] = {}
+        self._default_bkt_params = bkt_params or BKTParams(
+            p_init=settings.bkt_p_init,
+            p_transit=settings.bkt_p_transit,
+            p_guess=settings.bkt_p_guess,
+            p_slip=settings.bkt_p_slip,
+        )
+        logger.info("LearnerModelManager initialized")
+
+    def get_or_create_model(self, learner_id: str) -> LearnerModel:
+        """
+        获取学习者模型，不存在则创建。
+
+        Args:
+            learner_id: 学习者ID
+
+        Returns:
+            LearnerModel: 学习者模型实例
+        """
+        if learner_id not in self._learner_models:
+            self._learner_models[learner_id] = LearnerModel(
+                learner_id=learner_id,
+                bkt_params=self._default_bkt_params,
+            )
+            logger.debug("Created new LearnerModel for learner_id=%s", learner_id)
+        return self._learner_models[learner_id]
+
+    def get_model(self, learner_id: str) -> Optional[LearnerModel]:
+        """
+        获取已存在的学习者模型。
+
+        Args:
+            learner_id: 学习者ID
+
+        Returns:
+            Optional[LearnerModel]: 学习者模型实例，不存在则返回None
+        """
+        return self._learner_models.get(learner_id)
+
+    def remove_model(self, learner_id: str) -> bool:
+        """
+        移除学习者模型。
+
+        Args:
+            learner_id: 学习者ID
+
+        Returns:
+            bool: 是否成功移除
+        """
+        if learner_id in self._learner_models:
+            del self._learner_models[learner_id]
+            logger.info("Removed LearnerModel for learner_id=%s", learner_id)
+            return True
+        return False
+
+    def get_all_learner_ids(self) -> list[str]:
+        """
+        获取所有学习者ID。
+
+        Returns:
+            list[str]: 学习者ID列表
+        """
+        return list(self._learner_models.keys())

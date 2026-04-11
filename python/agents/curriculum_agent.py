@@ -1,40 +1,46 @@
 """
 Curriculum Agent（课程Agent）-- 动态学习路径规划与间隔重复排期。
-
 核心职责：
 1. 基于知识图谱拓扑排序规划学习路径
 2. 使用SM-2算法安排复习时间
 3. 检查前置知识是否达标再推进新内容
-
 面试要点：
 - 为什么学习路径要动态生成？每个学生进度不同，固定路径不够个性化
 - SM-2 vs Leitner 系统：SM-2更精细，连续调整间隔
 - 拓扑排序保证学习顺序：前置知识必须先掌握
 """
-
 import logging
+from typing import List
 
 from .base_agent import BaseAgent
 from core.event_bus import Event, EventType
 from core.knowledge_graph import KnowledgeGraph, build_sample_math_graph
 from core.spaced_repetition import SpacedRepetition, ReviewItem
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
-
-MASTERY_THRESHOLD = 0.6
 
 
 class CurriculumAgent(BaseAgent):
     """课程Agent：动态规划学习路径 + 间隔重复排期。"""
 
     def __init__(self, *args, **kwargs):
+        """
+        初始化课程Agent。
+        """
         super().__init__(*args, **kwargs)
         self.knowledge_graph: KnowledgeGraph = build_sample_math_graph()
         self.sr = SpacedRepetition()
         self._review_items: dict[str, dict[str, ReviewItem]] = {}
 
     @property
-    def subscribed_events(self) -> list[EventType]:
+    def subscribed_events(self) -> List[EventType]:
+        """
+        声明订阅的事件类型。
+
+        Returns:
+            List[EventType]: 订阅的事件列表
+        """
         return [
             EventType.MASTERY_UPDATED,
             EventType.WEAKNESS_DETECTED,
@@ -42,6 +48,12 @@ class CurriculumAgent(BaseAgent):
         ]
 
     async def handle_event(self, event: Event) -> None:
+        """
+        处理接收到的事件。
+
+        Args:
+            event: 接收到的事件
+        """
         if event.type == EventType.MASTERY_UPDATED:
             await self._handle_mastery_update(event)
         elif event.type == EventType.WEAKNESS_DETECTED:
@@ -50,7 +62,12 @@ class CurriculumAgent(BaseAgent):
             await self._handle_pace_adjustment(event)
 
     async def _handle_mastery_update(self, event: Event) -> None:
-        """mastery更新时，更新复习计划 + 检查是否可以推进新知识点。"""
+        """
+        mastery更新时，更新复习计划 + 检查是否可以推进新知识点。
+
+        Args:
+            event: 掌握度更新事件
+        """
         learner_id = event.learner_id
         knowledge_id = event.data.get("knowledge_id", "")
         mastery = event.data.get("mastery", 0.0)
@@ -59,13 +76,21 @@ class CurriculumAgent(BaseAgent):
         review_item = self._get_review_item(learner_id, knowledge_id)
         self.sr.review(review_item, quality)
 
-        if mastery >= MASTERY_THRESHOLD:
+        if mastery >= settings.mastery_threshold:
             await self._check_and_recommend_next(learner_id)
 
         await self._send_review_schedule(learner_id)
 
     def _mastery_to_quality(self, mastery: float) -> int:
-        """将mastery概率映射到SM-2的quality评分 (0-5)。"""
+        """
+        将mastery概率映射到SM-2的quality评分 (0-5)。
+
+        Args:
+            mastery: 掌握度值（0-1）
+
+        Returns:
+            int: SM-2质量评分（0-5）
+        """
         if mastery >= 0.9:
             return 5
         elif mastery >= 0.75:
@@ -79,7 +104,16 @@ class CurriculumAgent(BaseAgent):
         return 0
 
     def _get_review_item(self, learner_id: str, knowledge_id: str) -> ReviewItem:
-        """获取或创建复习条目。"""
+        """
+        获取或创建复习条目。
+
+        Args:
+            learner_id: 学习者ID
+            knowledge_id: 知识点ID
+
+        Returns:
+            ReviewItem: 复习条目
+        """
         if learner_id not in self._review_items:
             self._review_items[learner_id] = {}
         items = self._review_items[learner_id]
@@ -88,15 +122,20 @@ class CurriculumAgent(BaseAgent):
         return items[knowledge_id]
 
     async def _check_and_recommend_next(self, learner_id: str) -> None:
-        """检查是否有新的可学知识点推荐。"""
-        model = self.get_learner_model(learner_id)
+        """
+        检查是否有新的可学知识点推荐。
+
+        Args:
+            learner_id: 学习者ID
+        """
+        model = self.learner_model_manager.get_or_create_model(learner_id)
         mastered_ids = {
             s.knowledge_id
             for s in model.knowledge_states.values()
-            if s.mastery >= MASTERY_THRESHOLD
+            if s.mastery >= settings.mastery_threshold
         }
-
         ready = self.knowledge_graph.get_ready_nodes(mastered_ids)
+
         if ready:
             next_topic = ready[0]
             node = self.knowledge_graph.nodes.get(next_topic)
@@ -113,7 +152,12 @@ class CurriculumAgent(BaseAgent):
             )
 
     async def _send_review_schedule(self, learner_id: str) -> None:
-        """发送复习计划。"""
+        """
+        发送复习计划。
+
+        Args:
+            learner_id: 学习者ID
+        """
         items = list(self._review_items.get(learner_id, {}).values())
         due_items = self.sr.get_due_items(items)
         schedule = self.sr.get_study_schedule(items, days_ahead=7)
@@ -132,17 +176,21 @@ class CurriculumAgent(BaseAgent):
             )
 
     async def _handle_weakness(self, event: Event) -> None:
-        """处理薄弱知识点，规划补救路径。"""
+        """
+        处理薄弱知识点，规划补救路径。
+
+        Args:
+            event: 薄弱点检测事件
+        """
         learner_id = event.learner_id
         knowledge_id = event.data.get("knowledge_id", "")
 
-        model = self.get_learner_model(learner_id)
+        model = self.learner_model_manager.get_or_create_model(learner_id)
         mastered_ids = {
             s.knowledge_id
             for s in model.knowledge_states.values()
-            if s.mastery >= MASTERY_THRESHOLD
+            if s.mastery >= settings.mastery_threshold
         }
-
         remedial_path = self.knowledge_graph.get_learning_path(knowledge_id, mastered_ids)
 
         await self.emit(
@@ -157,10 +205,14 @@ class CurriculumAgent(BaseAgent):
         )
 
     async def _handle_pace_adjustment(self, event: Event) -> None:
-        """响应Engagement Agent的节奏调整请求。"""
+        """
+        响应Engagement Agent的节奏调整请求。
+
+        Args:
+            event: 节奏调整事件
+        """
         action = event.data.get("action", "")
         learner_id = event.learner_id
-
         if action == "slow_down":
             logger.info("[CurriculumAgent] Slowing down pace for learner %s", learner_id)
         elif action == "speed_up":

@@ -1,26 +1,26 @@
 """
 Hint Agent（提示Agent）-- 分级提示策略。
-
 核心职责：
 1. 收到提示请求后，根据学生尝试次数和mastery决定提示级别
 2. 三级提示：暗示(Metacognitive) → 引导(Scaffolding) → 直接答案(Targeted)
 3. 目标：85%的情况使用暗示或引导，仅15%给直接答案
-
 面试要点：
 - 分级提示的教育学依据：Vygotsky的最近发展区(ZPD)理论
 - 为什么不直接给答案？研究表明引导式学习的记忆保留率是被动学习的3倍
 - 提示级别如何决定？综合考虑尝试次数、mastery、时间消耗
 """
-
 import logging
+from typing import List
 
 from .base_agent import BaseAgent
 from core.event_bus import Event, EventType
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 
 class HintLevel:
+    """提示级别枚举。"""
     METACOGNITIVE = 1  # 暗示：引导学生反思思路
     SCAFFOLDING = 2  # 引导：给出关键步骤提示
     TARGETED = 3  # 直接：给出答案或具体解法
@@ -59,14 +59,29 @@ class HintAgent(BaseAgent):
     """提示Agent：实现分级提示策略。"""
 
     def __init__(self, *args, **kwargs):
+        """
+        初始化提示Agent。
+        """
         super().__init__(*args, **kwargs)
         self._hint_history: dict[str, dict[str, int]] = {}
 
     @property
-    def subscribed_events(self) -> list[EventType]:
+    def subscribed_events(self) -> List[EventType]:
+        """
+        声明订阅的事件类型。
+
+        Returns:
+            List[EventType]: 订阅的事件列表
+        """
         return [EventType.HINT_NEEDED]
 
     async def handle_event(self, event: Event) -> None:
+        """
+        处理接收到的事件。
+
+        Args:
+            event: 接收到的事件
+        """
         if event.type == EventType.HINT_NEEDED:
             await self._provide_hint(event)
 
@@ -75,42 +90,51 @@ class HintAgent(BaseAgent):
     ) -> int:
         """
         决定提示级别的策略。
-
         规则：
         - 第1-2次尝试 → Level 1（元认知暗示）
         - 第3-4次尝试 → Level 2（脚手架引导）
         - 第5次及以上 → Level 3（直接提示）
         - mastery极低(< 0.15) 且 attempts >= 3 → 提前升级到 Level 3
-
         目标：85%使用Level 1-2，15%使用Level 3
+
+        Args:
+            learner_id: 学习者ID
+            knowledge_id: 知识点ID
+            mastery: 掌握度值
+            attempts: 尝试次数
+
+        Returns:
+            int: 提示级别（1-3）
         """
         key = f"{learner_id}:{knowledge_id}"
         hint_count = self._hint_history.get(key, 0)
 
-        if mastery < 0.15 and attempts >= 3:
+        if mastery < settings.low_mastery_threshold and attempts >= settings.weakness_min_attempts:
             return HintLevel.TARGETED
-
-        if hint_count <= 1:
+        if hint_count <= settings.max_hint_level_1:
             return HintLevel.METACOGNITIVE
-        elif hint_count <= 3:
+        elif hint_count <= settings.max_hint_level_2:
             return HintLevel.SCAFFOLDING
         else:
             return HintLevel.TARGETED
 
     async def _provide_hint(self, event: Event) -> None:
-        """生成并发送分级提示。"""
+        """
+        生成并发送分级提示。
+
+        Args:
+            event: 提示请求事件
+        """
         learner_id = event.learner_id
         knowledge_id = event.data.get("knowledge_id", "")
         mastery = event.data.get("mastery", 0.0)
         attempts = event.data.get("attempts", 1)
 
         level = self._determine_hint_level(learner_id, knowledge_id, mastery, attempts)
-
         key = f"{learner_id}:{knowledge_id}"
         self._hint_history[key] = self._hint_history.get(key, 0) + 1
 
         hint_text = self._generate_hint(knowledge_id, level)
-
         level_names = {
             HintLevel.METACOGNITIVE: "metacognitive",
             HintLevel.SCAFFOLDING: "scaffolding",
@@ -142,9 +166,15 @@ class HintAgent(BaseAgent):
     def _generate_hint(self, knowledge_id: str, level: int) -> str:
         """
         生成提示文本。
-
         生产环境中会调用LLM根据具体题目生成，
         这里用模板演示分级提示的逻辑。
+
+        Args:
+            knowledge_id: 知识点ID
+            level: 提示级别
+
+        Returns:
+            str: 提示文本
         """
         templates = HINT_TEMPLATES[level]["templates"]
         template = templates[0]

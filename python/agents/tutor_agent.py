@@ -1,23 +1,23 @@
 """
 Tutor Agent（教学Agent）-- 苏格拉底式提问教学。
-
 核心职责：
 1. 根据学生水平采用苏格拉底式提问，引导而非告知
 2. 根据Assessment结果动态调整教学难度
 3. 当学生卡住时，请求Hint Agent提供分级提示
-
 面试要点：
 - 苏格拉底式教学：不给答案，通过反问让学生自己发现
 - Prompt Engineering：针对不同mastery等级设计不同的Prompt模板
 - 引导率85%目标：大部分情况只给暗示和引导
 """
-
 import logging
+from typing import List
 
 from .base_agent import BaseAgent
 from core.event_bus import Event, EventType
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
 
 SOCRATIC_PROMPTS = {
     "beginner": (
@@ -56,11 +56,20 @@ class TutorAgent(BaseAgent):
     """教学Agent：采用苏格拉底式提问教学法。"""
 
     def __init__(self, *args, **kwargs):
+        """
+        初始化教学Agent。
+        """
         super().__init__(*args, **kwargs)
-        self._student_attempts: dict[str, dict[str, int]] = {}
+        self._student_attempts: dict[str, int] = {}
 
     @property
-    def subscribed_events(self) -> list[EventType]:
+    def subscribed_events(self) -> List[EventType]:
+        """
+        声明订阅的事件类型。
+
+        Returns:
+            List[EventType]: 订阅的事件列表
+        """
         return [
             EventType.ASSESSMENT_COMPLETE,
             EventType.STUDENT_MESSAGE,
@@ -69,6 +78,12 @@ class TutorAgent(BaseAgent):
         ]
 
     async def handle_event(self, event: Event) -> None:
+        """
+        处理接收到的事件。
+
+        Args:
+            event: 接收到的事件
+        """
         if event.type == EventType.ASSESSMENT_COMPLETE:
             await self._handle_assessment(event)
         elif event.type == EventType.STUDENT_MESSAGE:
@@ -79,7 +94,12 @@ class TutorAgent(BaseAgent):
             await self._handle_engagement_alert(event)
 
     async def _handle_assessment(self, event: Event) -> None:
-        """根据评估结果调整教学策略。"""
+        """
+        根据评估结果调整教学策略。
+
+        Args:
+            event: 评估完成事件
+        """
         learner_id = event.learner_id
         knowledge_id = event.data.get("knowledge_id", "")
         mastery = event.data.get("mastery", 0.0)
@@ -132,9 +152,18 @@ class TutorAgent(BaseAgent):
     ) -> str:
         """
         生成教学回复。
-
         实际生产环境中，这里会调用LLM（如GPT-4/MiniMax）。
         当前用模板演示苏格拉底式教学的逻辑框架。
+
+        Args:
+            knowledge_id: 知识点ID
+            level: 掌握度等级
+            mastery: 掌握度值
+            is_correct: 是否答对
+            question: 学生问题
+
+        Returns:
+            str: 教学回复文本
         """
         if is_correct is True:
             return (
@@ -160,12 +189,17 @@ class TutorAgent(BaseAgent):
             )
 
     async def _handle_student_message(self, event: Event) -> None:
-        """处理学生消息。"""
+        """
+        处理学生消息。
+
+        Args:
+            event: 学生消息事件
+        """
         learner_id = event.learner_id
         message = event.data.get("message", "")
         knowledge_id = event.data.get("knowledge_id", "general")
 
-        model = self.get_learner_model(learner_id)
+        model = self.learner_model_manager.get_or_create_model(learner_id)
         state = model.get_state(knowledge_id)
 
         response = self._generate_teaching_response(
@@ -184,7 +218,12 @@ class TutorAgent(BaseAgent):
         )
 
     async def _handle_hint_response(self, event: Event) -> None:
-        """转发Hint Agent的回复给学生。"""
+        """
+        转发Hint Agent的回复给学生。
+
+        Args:
+            event: 提示响应事件
+        """
         await self.emit(
             EventType.TEACHING_RESPONSE,
             event.learner_id,
@@ -197,7 +236,12 @@ class TutorAgent(BaseAgent):
         )
 
     async def _handle_engagement_alert(self, event: Event) -> None:
-        """响应Engagement Agent的警报，调整教学难度。"""
+        """
+        响应Engagement Agent的警报，调整教学难度。
+
+        Args:
+            event: 互动警报事件
+        """
         alert_type = event.data.get("alert_type", "")
         if alert_type == "frustration":
             await self.emit(
