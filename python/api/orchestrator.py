@@ -132,6 +132,23 @@ class AgentOrchestrator:
                 "level": self._get_mastery_level(result["mastery"]),
             }
         })
+        from core.database import get_database
+        db = get_database()
+
+        # 保存学习历史
+        db.add_learning_history(
+            learner_id=learner_id,
+            knowledge_id=knowledge_id,
+            event_type="answer_submitted",
+            is_correct=is_correct,
+            mastery=result["mastery"],
+            time_spent=time_spent
+        )
+
+        # 保存学习者模型状态（修正：只传 model 对象）
+        learner_model = self.learner_model_manager.get_model(learner_id)
+        if learner_model:
+            db.save_learner_model(learner_model)
 
         return events
 
@@ -268,4 +285,5 @@ class AgentOrchestrator:
             dict: 统计信息
         """
         return self.event_bus.get_stats()
+
 orchestrator = AgentOrchestrator()

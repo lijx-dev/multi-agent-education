@@ -1,0 +1,365 @@
+"""
+多Agent智能学习系统 - Streamlit 交互式前端。
+功能：
+1. 学生登录
+2. 知识点选择
+3. 答题界面
+4. 实时聊天
+5. 学习进度展示
+6. 知识图谱可视化
+"""
+import streamlit as st
+import asyncio
+import pandas as pd
+import plotly.express as px
+from datetime import datetime
+
+# 导入核心模块
+from api.orchestrator import AgentOrchestrator
+from core.knowledge_graph import build_sample_math_graph, KnowledgeGraph, KnowledgeNode
+from core.database import get_database
+
+# 页面配置
+st.set_page_config(
+    page_title="多Agent智能学习系统",
+    page_icon="🧠",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# 初始化Session State
+if "orchestrator" not in st.session_state:
+    st.session_state.orchestrator = AgentOrchestrator()
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "learner_id" not in st.session_state:
+    st.session_state.learner_id = "student_001"
+if "current_knowledge" not in st.session_state:
+    st.session_state.current_knowledge = "arithmetic"
+if "show_progress" not in st.session_state:
+    st.session_state.show_progress = False
+
+# 侧边栏：学生信息与设置
+with st.sidebar:
+    st.title("🧠 多Agent智能学习系统")
+    st.divider()
+
+    # 学生ID输入
+    st.session_state.learner_id = st.text_input(
+        "👤 学生ID",
+        value=st.session_state.learner_id,
+        help="输入任意学生ID，系统会自动保存学习进度"
+    )
+
+    # 构建知识图谱（确保全局可用）
+    knowledge_graph = build_sample_math_graph()
+    knowledge_options = list(knowledge_graph.nodes.keys())
+
+    # 知识点选择
+    st.session_state.current_knowledge = st.selectbox(
+        "📚 选择知识点",
+        options=knowledge_options,
+        index=knowledge_options.index(
+            st.session_state.current_knowledge) if st.session_state.current_knowledge in knowledge_options else 0,
+        help="选择你想学习的知识点"
+    )
+
+    # 显示当前知识点信息
+    if st.session_state.current_knowledge in knowledge_graph.nodes:
+        node = knowledge_graph.nodes[st.session_state.current_knowledge]
+        st.info(f"**{node.name}**\n\n难度：{'⭐' * int(node.difficulty * 5)}\n\n{node.description}")
+
+    st.divider()
+
+    # 学习进度快速查看
+    if st.button("📊 查看我的学习进度"):
+        st.session_state.show_progress = True
+
+    # 清空聊天记录
+    if st.button("🗑️ 清空聊天记录"):
+        st.session_state.messages = []
+        st.success("聊天记录已清空！")
+
+# 主界面
+tab1, tab2, tab3 = st.tabs(["💬 学习聊天", "📝 答题练习", "📊 学习进度"])
+
+# --- Tab 1: 学习聊天 ---
+with tab1:
+    st.header(f"学习聊天 - {st.session_state.current_knowledge}")
+
+    # 显示聊天历史
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # 聊天输入
+    if prompt := st.chat_input("问我任何问题，或者告诉我你在学习中遇到的困难..."):
+        # 添加用户消息
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # 调用Agent处理
+        with st.chat_message("assistant"):
+            with st.spinner("AI老师正在思考..."):
+                try:
+                    # 运行异步函数
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    events = loop.run_until_complete(
+                        st.session_state.orchestrator.ask_question(
+                            st.session_state.learner_id,
+                            st.session_state.current_knowledge,
+                            prompt
+                        )
+                    )
+
+                    # 提取教学回复
+                    response = "抱歉，我现在无法回答你的问题。"
+                    for event in events:
+                        if event.get("type") == "tutor.teaching_response":
+                            response = event.get("data", {}).get("response", response)
+
+                    st.markdown(response)
+
+                    # 添加助手消息
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+
+                except Exception as e:
+                    st.error(f"发生错误：{str(e)}")
+
+# --- Tab 2: 答题练习 ---
+with tab2:
+    st.header(f"答题练习 - {st.session_state.current_knowledge}")
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.subheader("题目")
+        question_text = st.text_area(
+            "输入题目内容",
+            height=150,
+            placeholder="例如：解方程 2x + 3 = 7"
+        )
+
+        st.subheader("你的答案")
+        user_answer = st.text_input("输入你的答案")
+
+        is_correct = st.radio(
+            "这道题你答对了吗？",
+            ("是的，我答对了", "不，我答错了"),
+            index=1
+        )
+
+        time_spent = st.number_input(
+            "花费时间（秒）",
+            min_value=0,
+            value=30
+        )
+
+        if st.button("🚀 提交答案", type="primary"):
+            if not question_text:
+                st.warning("请先输入题目内容！")
+            else:
+                with st.spinner("AI老师正在批改并分析你的掌握情况..."):
+                    try:
+                        # 运行异步函数
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        events = loop.run_until_complete(
+                            st.session_state.orchestrator.submit_answer(
+                                st.session_state.learner_id,
+                                st.session_state.current_knowledge,
+                                is_correct == "是的，我答对了",
+                                time_spent
+                            )
+                        )
+
+                        # 显示结果
+                        st.success("提交成功！")
+
+                        # 提取并显示关键信息
+                        mastery = 0.0
+                        response = ""
+
+                        for event in events:
+                            if event.get("type") == "assessment.mastery_updated":
+                                mastery = event.get("data", {}).get("mastery", 0.0)
+                            if event.get("type") == "tutor.teaching_response":
+                                response = event.get("data", {}).get("response", "")
+
+                        # 显示掌握度
+                        st.metric(
+                            label=f"{knowledge_graph.nodes[st.session_state.current_knowledge].name} 掌握度",
+                            value=f"{mastery:.0%}",
+                            delta=f"{(mastery - 0.1):+.0%}" if mastery > 0.1 else None
+                        )
+
+                        # 显示AI回复
+                        if response:
+                            st.divider()
+                            st.subheader("AI老师的反馈")
+                            st.markdown(response)
+
+                    except Exception as e:
+                        st.error(f"发生错误：{str(e)}")
+
+    with col2:
+        st.subheader("知识图谱")
+        try:
+            from streamlit_agraph import agraph, Node, Edge, Config
+
+            # 构建节点和边
+            nodes = []
+            edges = []
+            learner_model = st.session_state.orchestrator.learner_model_manager.get_model(st.session_state.learner_id)
+
+            # 添加所有知识点节点
+            for kid, node_data in knowledge_graph.nodes.items():
+                # 根据掌握度设置节点颜色
+                color = "#97C2FC"  # 默认蓝色
+                if learner_model:
+                    try:
+                        state = learner_model.get_state(kid)
+                        mastery = state.mastery
+                        if mastery >= 0.85:
+                            color = "#00FF00"  # 绿色 - 已掌握
+                        elif mastery >= 0.6:
+                            color = "#FFFF00"  # 黄色 - 熟练
+                        elif mastery >= 0.3:
+                            color = "#FFA500"  # 橙色 - 发展中
+                        else:
+                            color = "#FF0000"  # 红色 - 未掌握
+                    except:
+                        pass
+
+                nodes.append(Node(
+                    id=kid,
+                    label=node_data.name,
+                    size=25,
+                    color=color
+                ))
+
+            # 添加知识点之间的边（依赖关系）
+            for nid in knowledge_graph.nodes:
+                for successor in knowledge_graph.get_successors(nid):
+                    edges.append(Edge(
+                        source=nid,
+                        target=successor,
+                        type="CURVE_SMOOTH"
+                    ))
+
+            # 配置图谱显示
+            config = Config(
+                width=500,
+                height=500,
+                directed=True,
+                physics=True,
+                hierarchical=False
+            )
+
+            # 渲染图谱
+            agraph(nodes=nodes, edges=edges, config=config)
+
+            # 显示图例
+            st.caption("🟢 已掌握 | 🟡 熟练 | 🟠 发展中 | 🔴 未掌握")
+
+        except ImportError:
+            st.error("缺少依赖 streamlit-agraph，请执行：pip install streamlit-agraph")
+        except Exception as e:
+            st.warning(f"知识图谱加载失败：{str(e)}")
+            st.info("不影响学习聊天和答题功能")
+
+# --- Tab 3: 学习进度 ---
+with tab3:
+    st.header("我的学习进度")
+
+    # 获取学习者进度
+    progress = st.session_state.orchestrator.get_learner_progress(st.session_state.learner_id)
+
+    if progress.get("status") == "no_data":
+        st.info("你还没有开始学习，去答题或提问吧！")
+    else:
+        # 总体统计
+        col1, col2, col3, col4 = st.columns(4)
+
+        overall = progress.get("progress", {})
+        with col1:
+            st.metric("总知识点数", overall.get("total_knowledge_points", 0))
+        with col2:
+            st.metric("平均掌握度", f"{overall.get('avg_mastery', 0):.0%}")
+        with col3:
+            st.metric("总答题数", overall.get("total_attempts", 0))
+        with col4:
+            st.metric("正确率", f"{overall.get('accuracy', 0):.0%}")
+
+        st.divider()
+
+        # 知识点掌握情况
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("💪 已掌握的知识点")
+            strong_points = progress.get("strong_points", [])
+            if strong_points:
+                for sp in strong_points:
+                    node_name = knowledge_graph.nodes.get(sp['id'], sp['id']).name if sp['id'] in knowledge_graph.nodes else sp['id']
+                    st.success(f"✅ {node_name} - {sp['mastery']:.0%}")
+            else:
+                st.info("还没有已掌握的知识点，继续加油！")
+
+        with col2:
+            st.subheader("📚 需要加强的知识点")
+            weak_points = progress.get("weak_points", [])
+            if weak_points:
+                for wp in weak_points:
+                    node_name = knowledge_graph.nodes.get(wp['id'], wp['id']).name if wp['id'] in knowledge_graph.nodes else wp['id']
+                    st.warning(f"⚠️ {node_name} - {wp['mastery']:.0%}")
+            else:
+                st.success("太棒了！没有需要加强的知识点！")
+
+        st.divider()
+
+        # 学习历史
+        st.subheader("📜 最近学习历史")
+        db = get_database()
+        history = db.get_learning_history(st.session_state.learner_id, limit=20)
+
+        if history:
+            history_df = pd.DataFrame(history)
+            history_df["timestamp"] = pd.to_datetime(history_df["timestamp"])
+            history_df = history_df.sort_values("timestamp", ascending=False)
+
+            # 替换知识点ID为名称
+            def get_knowledge_name(kid):
+                return knowledge_graph.nodes.get(kid, kid).name if kid in knowledge_graph.nodes else kid
+
+            history_df["knowledge_name"] = history_df["knowledge_id"].apply(get_knowledge_name)
+
+            # 显示表格
+            st.dataframe(
+                history_df[["timestamp", "knowledge_name", "event_type"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "timestamp": st.column_config.DatetimeColumn("时间"),
+                    "knowledge_name": st.column_config.TextColumn("知识点"),
+                    "event_type": st.column_config.TextColumn("事件类型")
+                }
+            )
+
+            # 学习趋势图
+            st.subheader("📈 学习趋势")
+            if "mastery" in history_df.columns:
+                trend_df = history_df.groupby(["timestamp", "knowledge_name"])["mastery"].mean().reset_index()
+                fig = px.line(trend_df, x="timestamp", y="mastery", color="knowledge_name",
+                              title="知识点掌握度变化", labels={"mastery": "掌握度", "timestamp": "时间"})
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("还没有学习历史记录")
+
+# 自动跳转到进度页面（如果用户点击了快速查看）
+if st.session_state.show_progress:
+    js = "window.scrollTo(0, 0); document.querySelector('[data-testid=\"stTab\"]:nth-child(3)').click();"
+    st.components.v1.html(f"<script>{js}</script>", height=0)
+    st.session_state.show_progress = False

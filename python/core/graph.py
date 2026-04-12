@@ -68,6 +68,7 @@ def assess_node(state: LearningState) -> LearningState:
     learner_id = state["learner_id"]
     knowledge_id = state["knowledge_id"]
     is_correct = state.get("is_correct")
+    current_attempts = state.get("attempts", 0)
 
     model = _learner_manager.get_or_create_model(learner_id)
 
@@ -105,7 +106,6 @@ def assess_node(state: LearningState) -> LearningState:
         "attempts": attempts,
         "next_action": next_action
     }
-
 
 def teach_node(state: LearningState) -> LearningState:
     """

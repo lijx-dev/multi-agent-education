@@ -233,6 +233,27 @@ class Database:
         except Exception as e:
             logger.exception("Failed to log learning event", exc_info=e)
 
+    # ------------------ 新增：为了兼容你的调用 ------------------
+    def add_learning_history(
+        self,
+        learner_id: str,
+        knowledge_id: str,
+        event_type: str,
+        is_correct: bool = None,
+        mastery: float = None,
+        time_spent: int = None
+    ):
+        """
+        兼容式添加学习历史记录（适配 orchestrator 调用）。
+        """
+        event_data = {
+            "is_correct": is_correct,
+            "mastery": mastery,
+            "time_spent": time_spent
+        }
+        self.log_learning_event(learner_id, knowledge_id, event_type, event_data)
+    # -----------------------------------------------------------
+
     def get_learning_history(self, learner_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """
         获取学习历史。

@@ -1,0 +1,14 @@
+
+
+services:
+  edu-agent:
+    build: .
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DASHSCOPE_API_KEY=your_api_key_here
+      - DASHSCOPE_MODEL=qwen-turbo
+    restart: unless-stopped
