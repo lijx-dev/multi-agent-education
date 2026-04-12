@@ -84,6 +84,7 @@ class LearnerModel:
     - get_weak_points(): 获取薄弱知识点
     - get_ready_topics(): 获取可以学习的新知识点
     """
+
     def __init__(self, learner_id: str, bkt_params: BKTParams | None = None) -> None:
         """
         初始化学习者模型。
@@ -98,6 +99,9 @@ class LearnerModel:
         self.session_start: datetime = datetime.now()
         self.total_interactions: int = 0
         self.metadata: dict[str, Any] = {}
+
+        # 个性化参数：学习速度因子（1.0为平均水平）
+        self.learning_speed_factor: float = 1.0
 
     def get_state(self, knowledge_id: str) -> KnowledgeState:
         """
@@ -129,8 +133,10 @@ class LearnerModel:
             P(wrong|L) = P(S)            # 会了但失误
             P(wrong|¬L) = 1 - P(G)      # 不会且没猜对
             P(Lₙ|wrong) = P(L)×P(S) / [P(L)×P(S) + (1-P(L))×(1-P(G))]
-          学习转移（每次练习都可能学会）：
-            P(Lₙ) = P(Lₙ|obs) + (1 - P(Lₙ|obs)) × P(T)
+        # 学习转移（每次练习都可能学会）
+        # 加入个性化学习速度因子
+        p_l_new = p_l_given_obs + (1 - p_l_given_obs) * self.bkt.p_transit * self.learning_speed_factor
+        state.mastery = max(0.0, min(1.0, p_l_new))
 
         Args:
             knowledge_id: 知识点ID
@@ -253,3 +259,40 @@ class LearnerModel:
             "session_start": self.session_start.isoformat(),
             "metadata": self.metadata,
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        序列化为字典（用于持久化）。
+
+        Returns:
+            dict[str, Any]: 序列化后的字典
+        """
+        return {
+            "learner_id": self.learner_id,
+            "knowledge_states": {
+                kid: state.model_dump() for kid, state in self.knowledge_states.items()
+            },
+            "total_interactions": self.total_interactions,
+            "session_start": self.session_start.isoformat(),
+            "metadata": self.metadata,
+        }
+
+    # 👇 新增这个方法：根据近期准确率更新学习速度
+    def update_learning_speed(self, recent_accuracy: float) -> None:
+        """
+        根据近期准确率更新学习速度因子。
+
+        Args:
+            recent_accuracy: 近期准确率（0-1）
+        """
+        # 准确率高 → 学习速度快
+        if recent_accuracy > 0.8:
+            self.learning_speed_factor = min(2.0, self.learning_speed_factor * 1.1)
+        # 准确率低 → 学习速度慢
+        elif recent_accuracy < 0.4:
+            self.learning_speed_factor = max(0.5, self.learning_speed_factor * 0.9)
+
+        logger.debug(
+            "[BKT] Updated learning speed for learner %s: %.2f",
+            self.learner_id, self.learning_speed_factor
+        )

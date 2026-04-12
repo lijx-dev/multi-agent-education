@@ -1,11 +1,15 @@
 """
 学习者模型管理器 -- 分离自BaseAgent的基础设施。
 负责学习者模型的创建、获取和持久化，实现业务逻辑与基础设施的分离。
+新增功能：
+- 支持从SQLite加载和保存学习者模型
+- 支持跨会话的长期记忆
 """
 import logging
 from typing import Dict, Optional
 
 from core.learner_model import LearnerModel, BKTParams
+from core.database import get_database
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -13,12 +17,12 @@ logger = logging.getLogger(__name__)
 
 class LearnerModelManager:
     """
-    学习者模型管理器。
+    学习者模型管理器（增强版）。
 
     职责：
     - 创建和管理学习者模型实例
     - 提供统一的模型访问接口
-    - （未来扩展）支持模型的持久化和加载
+    - 支持模型的持久化和加载（SQLite）
     """
 
     def __init__(self, bkt_params: Optional[BKTParams] = None) -> None:
@@ -35,11 +39,12 @@ class LearnerModelManager:
             p_guess=settings.bkt_p_guess,
             p_slip=settings.bkt_p_slip,
         )
-        logger.info("LearnerModelManager initialized")
+        self._db = get_database()
+        logger.info("LearnerModelManager initialized with persistence")
 
     def get_or_create_model(self, learner_id: str) -> LearnerModel:
         """
-        获取学习者模型，不存在则创建。
+        获取学习者模型，不存在则创建或从数据库加载。
 
         Args:
             learner_id: 学习者ID
@@ -48,16 +53,38 @@ class LearnerModelManager:
             LearnerModel: 学习者模型实例
         """
         if learner_id not in self._learner_models:
-            self._learner_models[learner_id] = LearnerModel(
-                learner_id=learner_id,
-                bkt_params=self._default_bkt_params,
-            )
-            logger.debug("Created new LearnerModel for learner_id=%s", learner_id)
+            # 先尝试从数据库加载
+            model = self._db.load_learner_model(learner_id, self._default_bkt_params)
+            if model:
+                self._learner_models[learner_id] = model
+                logger.debug("Loaded LearnerModel from DB: %s", learner_id)
+            else:
+                # 创建新模型
+                self._learner_models[learner_id] = LearnerModel(
+                    learner_id=learner_id,
+                    bkt_params=self._default_bkt_params,
+                )
+                logger.debug("Created new LearnerModel: %s", learner_id)
+
         return self._learner_models[learner_id]
+
+    def save_model(self, learner_id: str) -> bool:
+        """
+        保存学习者模型到数据库。
+
+        Args:
+            learner_id: 学习者ID
+
+        Returns:
+            bool: 是否成功保存
+        """
+        if learner_id in self._learner_models:
+            return self._db.save_learner_model(self._learner_models[learner_id])
+        return False
 
     def get_model(self, learner_id: str) -> Optional[LearnerModel]:
         """
-        获取已存在的学习者模型。
+        获取已存在的学习者模型（不自动创建）。
 
         Args:
             learner_id: 学习者ID
@@ -79,7 +106,7 @@ class LearnerModelManager:
         """
         if learner_id in self._learner_models:
             del self._learner_models[learner_id]
-            logger.info("Removed LearnerModel for learner_id=%s", learner_id)
+            logger.info("Removed LearnerModel: %s", learner_id)
             return True
         return False
 

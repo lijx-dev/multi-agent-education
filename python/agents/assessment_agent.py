@@ -69,6 +69,10 @@ class AssessmentAgent(BaseAgent):
 
         model = self.learner_model_manager.get_or_create_model(learner_id)
         state = model.update_mastery(knowledge_id, is_correct)
+        # 👇 新增这一段：根据近期准确率更新学习速度
+        overall_progress = model.get_overall_progress()
+        recent_accuracy = overall_progress.get("accuracy", 0.5)
+        model.update_learning_speed(recent_accuracy)
 
         # 发布掌握度更新事件（高优先级）
         await self.emit(

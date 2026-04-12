@@ -1,104 +1,102 @@
-"""REST API 路由。"""
-
-from fastapi import APIRouter, Request
+"""API 路由定义。"""
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import List, Optional, Any
 
-router = APIRouter(tags=["education"])
+from api.orchestrator import orchestrator
+
+router = APIRouter()
 
 
-class SubmitAnswerRequest(BaseModel):
+class SubmissionRequest(BaseModel):
     learner_id: str
     knowledge_id: str
     is_correct: bool
-    time_spent_seconds: float = 0
+    time_spent_seconds: float = 0.0
 
 
-class AskQuestionRequest(BaseModel):
+class QuestionRequest(BaseModel):
     learner_id: str
     knowledge_id: str
     question: str
 
 
-class SendMessageRequest(BaseModel):
+class MessageRequest(BaseModel):
     learner_id: str
     message: str
     knowledge_id: str = "general"
 
 
-@router.get("/health")
-async def health_check():
-    return {"status": "ok", "service": "multi-agent-education", "agents": 5}
-
-
 @router.post("/submit")
-async def submit_answer(req: SubmitAnswerRequest, request: Request):
-    """学生提交答题结果。"""
-    orch = request.app.state.orchestrator
-    events = await orch.submit_answer(
-        req.learner_id, req.knowledge_id, req.is_correct, req.time_spent_seconds
-    )
-    return {
-        "status": "processed",
-        "events_triggered": len(events),
-        "events": [
-            {"type": e.type.value, "source": e.source, "data": e.data}
-            for e in events[-10:]
-        ],
-    }
+async def submit_answer(req: SubmissionRequest) -> dict[str, Any]:
+    """
+    学生提交答题结果。
+    """
+    try:
+        events = await orchestrator.submit_answer(
+            req.learner_id,
+            req.knowledge_id,
+            req.is_correct,
+            req.time_spent_seconds,
+        )
+        return {
+            "learner_id": req.learner_id,
+            "events": events,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/question")
-async def ask_question(req: AskQuestionRequest, request: Request):
-    """学生提问。"""
-    orch = request.app.state.orchestrator
-    events = await orch.ask_question(req.learner_id, req.knowledge_id, req.question)
-    return {
-        "status": "processed",
-        "events_triggered": len(events),
-        "events": [
-            {"type": e.type.value, "source": e.source, "data": e.data}
-            for e in events[-10:]
-        ],
-    }
+async def ask_question(req: QuestionRequest) -> dict[str, Any]:
+    """
+    学生提问。
+    """
+    try:
+        events = await orchestrator.ask_question(
+            req.learner_id,
+            req.knowledge_id,
+            req.question,
+        )
+        return {
+            "learner_id": req.learner_id,
+            "events": events,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/message")
-async def send_message(req: SendMessageRequest, request: Request):
-    """学生发送消息（对话）。"""
-    orch = request.app.state.orchestrator
-    events = await orch.send_message(req.learner_id, req.message, req.knowledge_id)
-    return {
-        "status": "processed",
-        "events_triggered": len(events),
-        "events": [
-            {"type": e.type.value, "source": e.source, "data": e.data}
-            for e in events[-10:]
-        ],
-    }
+async def send_message(req: MessageRequest) -> dict[str, Any]:
+    """
+    学生发送自由消息。
+    """
+    try:
+        events = await orchestrator.send_message(
+            req.learner_id,
+            req.message,
+            req.knowledge_id,
+        )
+        return {
+            "learner_id": req.learner_id,
+            "events": events,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/progress/{learner_id}")
-async def get_progress(learner_id: str, request: Request):
-    """获取学生学习进度。"""
-    orch = request.app.state.orchestrator
-    return orch.get_learner_progress(learner_id)
+async def get_progress(learner_id: str) -> dict[str, Any]:
+    """
+    获取学习者进度。
+    """
+    try:
+        return orchestrator.get_learner_progress(learner_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/knowledge-graph")
-async def get_knowledge_graph(request: Request):
-    """获取知识图谱结构。"""
-    orch = request.app.state.orchestrator
-    graph = orch.curriculum.knowledge_graph
-    return {
-        "nodes": [
-            {
-                "id": n.id,
-                "name": n.name,
-                "difficulty": n.difficulty,
-                "prerequisites": n.prerequisites,
-                "tags": n.tags,
-            }
-            for n in graph.nodes.values()
-        ],
-        "learning_order": graph.topological_sort(),
-    }
+@router.get("/health")
+async def health_check() -> dict[str, str]:
+    """健康检查。"""
+    return {"status": "ok"}

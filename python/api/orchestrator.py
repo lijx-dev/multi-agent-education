@@ -1,33 +1,40 @@
 """
-Agent 编排器 -- 初始化所有Agent并连接到EventBus（重构适配版）。
-这是系统的"大脑"，负责：
-1. 创建EventBus实例
-2. 创建LearnerModelManager实例
-3. 初始化5个Agent并注入依赖
-4. 提供对外接口供API层调用
+Agent 编排器 -- 完全基于 LangGraph 重构。
+核心改进：
+1. 用 LangGraph 替代原事件总线，实现全局状态管理和条件路由
+2. 保留原 API 接口，完全向后兼容
+3. 支持跨会话的短期和长期记忆
+4. 简化了 Agent 之间的协作逻辑
 """
-from typing import List
+from typing import List, Dict, Any
 
-from core.event_bus import EventBus, Event, EventType
+from core.graph import get_learning_graph
 from core.learner_model_manager import LearnerModelManager
-from agents import (
-    AssessmentAgent,
-    TutorAgent,
-    CurriculumAgent,
-    HintAgent,
-    EngagementAgent,
-)
+from core.database import get_database
+from core.knowledge_graph import build_sample_math_graph
 
 
 class AgentOrchestrator:
-    """Agent编排器（重构适配版）。"""
+    """Agent编排器（LangGraph版）。"""
 
     def __init__(self) -> None:
         """初始化编排器。"""
-        self.event_bus = EventBus()
+        self.graph = get_learning_graph()
         self.learner_model_manager = LearnerModelManager()
+        self.db = get_database()
+        self.knowledge_graph = build_sample_math_graph()
 
-        # 初始化所有Agent，注入依赖
+        # 保留原有的Agent实例（用于兼容和辅助功能）
+        from agents import (
+            AssessmentAgent,
+            TutorAgent,
+            CurriculumAgent,
+            HintAgent,
+            EngagementAgent,
+        )
+        from core.event_bus import EventBus
+
+        self.event_bus = EventBus()
         self.assessment = AssessmentAgent(
             name="AssessmentAgent",
             event_bus=self.event_bus,
@@ -54,21 +61,11 @@ class AgentOrchestrator:
             learner_model_manager=self.learner_model_manager,
         )
 
-        # 启动所有Agent
-        self._start_all_agents()
-
-    def _start_all_agents(self) -> None:
-        """启动所有Agent（调用生命周期钩子）。"""
-        import asyncio
-        agents = [self.assessment, self.tutor, self.curriculum, self.hint, self.engagement]
-        for agent in agents:
-            asyncio.create_task(agent.on_start())
-
     async def submit_answer(
         self, learner_id: str, knowledge_id: str, is_correct: bool, time_spent: float = 0
-    ) -> List[Event]:
+    ) -> List[Dict[str, Any]]:
         """
-        学生提交答案 -> 触发完整的Agent处理链。
+        学生提交答案 -> 触发 LangGraph 学习流程。
 
         Args:
             learner_id: 学习者ID
@@ -77,26 +74,72 @@ class AgentOrchestrator:
             time_spent: 花费时间（秒）
 
         Returns:
-            List[Event]: 触发的事件列表
+            List[Dict[str, Any]]: 处理结果列表
         """
-        event = Event(
-            type=EventType.STUDENT_SUBMISSION,
-            source="api",
-            learner_id=learner_id,
-            data={
+        # 构建初始状态
+        initial_state = {
+            "learner_id": learner_id,
+            "knowledge_id": knowledge_id,
+            "is_correct": is_correct,
+            "time_spent_seconds": time_spent,
+            "mastery": 0.1,
+            "attempts": 0,
+            "hint_level": 1,
+            "next_action": "assess",
+            "context": {}
+        }
+
+        # 配置线程ID（用于记忆）
+        config = {"configurable": {"thread_id": learner_id}}
+
+        # 运行LangGraph
+        result = await self.graph.ainvoke(initial_state, config=config)
+
+        # 转换为原有的事件格式（向后兼容）
+        events = []
+
+        # 添加评估完成事件
+        events.append({
+            "type": "assessment.complete",
+            "source": "AssessmentAgent",
+            "data": {
                 "knowledge_id": knowledge_id,
                 "is_correct": is_correct,
-                "time_spent_seconds": time_spent,
-            },
-        )
-        await self.event_bus.publish(event)
-        return self.event_bus.get_history(learner_id=learner_id, limit=20)
+                "mastery": result["mastery"],
+                "level": self._get_mastery_level(result["mastery"]),
+            }
+        })
+
+        # 添加教学回复事件
+        if result.get("response"):
+            events.append({
+                "type": "tutor.teaching_response",
+                "source": "TutorAgent",
+                "data": {
+                    "knowledge_id": knowledge_id,
+                    "response": result["response"],
+                    "teaching_style": "socratic" if not result.get("hint") else "hint",
+                }
+            })
+
+        # 添加掌握度更新事件
+        events.append({
+            "type": "assessment.mastery_updated",
+            "source": "AssessmentAgent",
+            "data": {
+                "knowledge_id": knowledge_id,
+                "mastery": result["mastery"],
+                "level": self._get_mastery_level(result["mastery"]),
+            }
+        })
+
+        return events
 
     async def ask_question(
         self, learner_id: str, knowledge_id: str, question: str
-    ) -> List[Event]:
+    ) -> List[Dict[str, Any]]:
         """
-        学生提问 -> 触发Assessment + Tutor处理。
+        学生提问 -> 触发 LangGraph 问答流程。
 
         Args:
             learner_id: 学习者ID
@@ -104,22 +147,61 @@ class AgentOrchestrator:
             question: 问题内容
 
         Returns:
-            List[Event]: 触发的事件列表
+            List[Dict[str, Any]]: 处理结果列表
         """
-        event = Event(
-            type=EventType.STUDENT_QUESTION,
-            source="api",
-            learner_id=learner_id,
-            data={"knowledge_id": knowledge_id, "question": question},
-        )
-        await self.event_bus.publish(event)
-        return self.event_bus.get_history(learner_id=learner_id, limit=20)
+        # 构建初始状态
+        initial_state = {
+            "learner_id": learner_id,
+            "knowledge_id": knowledge_id,
+            "question": question,
+            "is_correct": None,
+            "mastery": 0.1,
+            "attempts": 0,
+            "hint_level": 1,
+            "next_action": "assess",
+            "context": {}
+        }
+
+        # 配置线程ID（用于记忆）
+        config = {"configurable": {"thread_id": learner_id}}
+
+        # 运行LangGraph
+        result = await self.graph.ainvoke(initial_state, config=config)
+
+        # 转换为原有的事件格式
+        events = []
+
+        # 添加评估完成事件
+        events.append({
+            "type": "assessment.complete",
+            "source": "AssessmentAgent",
+            "data": {
+                "knowledge_id": knowledge_id,
+                "question": question,
+                "current_mastery": result["mastery"],
+                "current_level": self._get_mastery_level(result["mastery"]),
+            }
+        })
+
+        # 添加教学回复事件
+        if result.get("response"):
+            events.append({
+                "type": "tutor.teaching_response",
+                "source": "TutorAgent",
+                "data": {
+                    "knowledge_id": knowledge_id,
+                    "response": result["response"],
+                    "teaching_style": "socratic",
+                }
+            })
+
+        return events
 
     async def send_message(
         self, learner_id: str, message: str, knowledge_id: str = "general"
-    ) -> List[Event]:
+    ) -> List[Dict[str, Any]]:
         """
-        学生发送消息 -> 触发Tutor对话。
+        学生发送消息 -> 触发 LangGraph 对话流程。
 
         Args:
             learner_id: 学习者ID
@@ -127,16 +209,10 @@ class AgentOrchestrator:
             knowledge_id: 知识点ID
 
         Returns:
-            List[Event]: 触发的事件列表
+            List[Dict[str, Any]]: 处理结果列表
         """
-        event = Event(
-            type=EventType.STUDENT_MESSAGE,
-            source="api",
-            learner_id=learner_id,
-            data={"message": message, "knowledge_id": knowledge_id},
-        )
-        await self.event_bus.publish(event)
-        return self.event_bus.get_history(learner_id=learner_id, limit=20)
+        # 对于通用消息，直接调用TutorAgent
+        return await self.ask_question(learner_id, knowledge_id, message)
 
     def get_learner_progress(self, learner_id: str) -> dict:
         """
@@ -165,6 +241,25 @@ class AgentOrchestrator:
             ],
         }
 
+    def _get_mastery_level(self, mastery: float) -> str:
+        """
+        根据mastery值获取掌握度等级。
+
+        Args:
+            mastery: 掌握度值（0-1）
+
+        Returns:
+            str: 掌握度等级
+        """
+        if mastery < 0.3:
+            return "beginner"
+        elif mastery < 0.6:
+            return "developing"
+        elif mastery < 0.85:
+            return "proficient"
+        else:
+            return "mastered"
+
     def get_event_bus_stats(self) -> dict:
         """
         获取事件总线统计信息。
@@ -173,3 +268,4 @@ class AgentOrchestrator:
             dict: 统计信息
         """
         return self.event_bus.get_stats()
+orchestrator = AgentOrchestrator()

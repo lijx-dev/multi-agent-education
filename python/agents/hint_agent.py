@@ -165,9 +165,7 @@ class HintAgent(BaseAgent):
 
     def _generate_hint(self, knowledge_id: str, level: int) -> str:
         """
-        生成提示文本。
-        生产环境中会调用LLM根据具体题目生成，
-        这里用模板演示分级提示的逻辑。
+        生成提示文本（使用通义千问）。
 
         Args:
             knowledge_id: 知识点ID
@@ -176,22 +174,38 @@ class HintAgent(BaseAgent):
         Returns:
             str: 提示文本
         """
-        templates = HINT_TEMPLATES[level]["templates"]
-        template = templates[0]
+        from core.llm import get_llm_client
 
-        if level == HintLevel.METACOGNITIVE:
-            return f"💡 关于「{knowledge_id}」的提示：\n{template}"
-        elif level == HintLevel.SCAFFOLDING:
-            return (
-                f"📝 关于「{knowledge_id}」的引导提示：\n"
-                f"这道题的关键是理解{knowledge_id}的核心概念。\n"
-                f"试着回忆一下相关的公式或定义，然后一步步来。"
-            )
-        else:
-            return (
-                f"📖 关于「{knowledge_id}」的详细解答：\n"
-                f"让我来帮你梳理一下解题思路。\n"
-                f"这次我会给你更详细的指导，但请你一定要自己重做一遍。\n"
-                f"【解题步骤】...\n"
-                f"建议复习完后再做2道同类型的练习巩固。"
-            )
+        llm = get_llm_client()
+
+        # 基于提示级别的系统提示词
+        level_descriptions = {
+            HintLevel.METACOGNITIVE: "元认知暗示：引导学生反思自己的思考过程，不要给出具体步骤",
+            HintLevel.SCAFFOLDING: "脚手架引导：给出关键步骤但不给答案",
+            HintLevel.TARGETED: "直接提示：给出具体解法（仅在多次尝试后使用）"
+        }
+
+        system_prompt = (
+            f"你是一位数学老师，正在给学生提供提示。\n"
+            f"当前提示级别：{level} - {level_descriptions[level]}\n"
+            f"知识点：{knowledge_id}\n"
+            f"请严格按照提示级别生成回复，不要超出范围。"
+        )
+
+        user_prompt = f"请给学生提供一个关于「{knowledge_id}」的提示。"
+
+        # 调用通义千问生成提示
+        hint_text = llm.generate(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=0.5
+        )
+
+        # 添加前缀
+        prefixes = {
+            HintLevel.METACOGNITIVE: "💡 元认知提示：",
+            HintLevel.SCAFFOLDING: "📝 引导提示：",
+            HintLevel.TARGETED: "📖 详细解答："
+        }
+
+        return f"{prefixes[level]}\n{hint_text}"

@@ -143,17 +143,15 @@ class TutorAgent(BaseAgent):
         )
 
     def _generate_teaching_response(
-        self,
-        knowledge_id: str,
-        level: str,
-        mastery: float,
-        is_correct: bool | None,
-        question: str,
+            self,
+            knowledge_id: str,
+            level: str,
+            mastery: float,
+            is_correct: bool | None,
+            question: str,
     ) -> str:
         """
-        生成教学回复。
-        实际生产环境中，这里会调用LLM（如GPT-4/MiniMax）。
-        当前用模板演示苏格拉底式教学的逻辑框架。
+        生成教学回复（使用通义千问）。
 
         Args:
             knowledge_id: 知识点ID
@@ -165,56 +163,57 @@ class TutorAgent(BaseAgent):
         Returns:
             str: 教学回复文本
         """
+        from core.llm import get_llm_client
+
+        llm = get_llm_client()
+
+        # 基于掌握度的系统提示词
+        system_prompts = {
+            "beginner": (
+                "你是一位耐心的数学老师，学生刚开始学习这个知识点。\n"
+                "请用最简单的语言和例子帮助学生理解概念。\n"
+                "不要直接给答案，而是通过提问引导学生思考。"
+            ),
+            "developing": (
+                "你是一位苏格拉底式的数学老师，学生正在学习中。\n"
+                "请通过提问引导学生思考，不要直接给答案。"
+            ),
+            "proficient": (
+                "你是一位挑战型的数学老师，学生已经比较熟练。\n"
+                "请提出更深层的思考问题，引导学生发现知识点之间的联系。"
+            ),
+            "mastered": (
+                "你是一位高级数学导师，学生已掌握此知识点。\n"
+                "请引导学生总结归纳方法论，布置综合性挑战题。"
+            ),
+        }
+
+        system_prompt = system_prompts.get(level, system_prompts["beginner"])
+
+        # 构建用户提示词
         if is_correct is True:
-            return (
-                f"很好！你在「{knowledge_id}」上的表现不错。"
+            user_prompt = (
+                f"学生在「{knowledge_id}」知识点上答对了题目。\n"
                 f"当前掌握度：{mastery:.0%}。\n"
-                f"让我问你一个更深入的问题：你能用自己的话解释一下这个概念吗？"
-                f"或者，你觉得这个知识点和之前学过的哪个知识点有联系？"
+                f"请给出鼓励，并提出一个更深入的思考问题。"
             )
         elif is_correct is False:
-            return (
-                f"没关系，让我们一起来分析「{knowledge_id}」。\n"
-                f"先不看答案，我想问你几个问题：\n"
-                f"1. 你觉得这道题考查的是什么知识点？\n"
-                f"2. 你做题的时候卡在了哪一步？\n"
-                f"3. 能不能先试试用最简单的数字代入看看？"
+            user_prompt = (
+                f"学生在「{knowledge_id}」知识点上答错了题目。\n"
+                f"当前掌握度：{mastery:.0%}。\n"
+                f"请不要直接告诉答案，而是通过提问引导学生分析错误原因。"
             )
         else:
-            return (
-                f"好的，关于「{knowledge_id}」，你的问题是：{question}\n"
-                f"在我回答之前，让我先问你：\n"
-                f"你对这个知识点已经了解了哪些内容？\n"
-                f"试着说说你的理解，我们一起看看对不对。"
+            user_prompt = (
+                f"学生关于「{knowledge_id}」的问题是：{question}\n"
+                f"请通过提问引导学生自己思考，不要直接给答案。"
             )
 
-    async def _handle_student_message(self, event: Event) -> None:
-        """
-        处理学生消息。
-
-        Args:
-            event: 学生消息事件
-        """
-        learner_id = event.learner_id
-        message = event.data.get("message", "")
-        knowledge_id = event.data.get("knowledge_id", "general")
-
-        model = self.learner_model_manager.get_or_create_model(learner_id)
-        state = model.get_state(knowledge_id)
-
-        response = self._generate_teaching_response(
-            knowledge_id, state.level.value, state.mastery, None, message
-        )
-
-        await self.emit(
-            EventType.TEACHING_RESPONSE,
-            learner_id,
-            {
-                "knowledge_id": knowledge_id,
-                "response": response,
-                "teaching_style": "socratic",
-                "difficulty_level": state.level.value,
-            },
+        # 调用通义千问生成回复
+        return llm.generate(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=0.7
         )
 
     async def _handle_hint_response(self, event: Event) -> None:
