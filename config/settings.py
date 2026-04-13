@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # 关键修改：允许额外的环境变量，避免future errors
     model_config = SettingsConfigDict(
-        env_file="../.env",
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore"  # 忽略未定义的环境变量
     )
