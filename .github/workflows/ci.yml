@@ -17,14 +17,16 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+        cache: 'pip'  # 缓存依赖，后续运行速度提升3倍
     
     - name: Install dependencies
       run: |
-        cd python
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install -r requirements.txt  # 现在requirements.txt在根目录，不需要cd python
+    
+    - name: Create data directory
+      run: mkdir -p data  # 提前创建数据库目录，避免初始化失败
     
     - name: Run tests
       run: |
-        cd python
-        python -m pytest tests/ -v
+        python -m pytest tests/ -v  # 测试文件也在根目录的tests/
