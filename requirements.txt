@@ -21,4 +21,4 @@ black==24.8.0
 isort==5.13.2
 flake8==7.1.0
 python-dotenv==1.0.1
-pydantic-settings==2.8.2
+pydantic-settings==2.8.1
