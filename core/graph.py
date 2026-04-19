@@ -7,12 +7,12 @@ LangGraph 学习状态图 -- 替代原事件总线的核心编排。
 4. 工具调用：预留工具调用接口
 """
 import logging
-from typing import TypedDict, Annotated, Optional, Dict, Any
+from typing import TypedDict, Optional, Dict, Any
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from core.learner_model_manager import LearnerModelManager
+from core.learner_model_manager import LearnerModelManager, get_learner_model_manager
 from core.llm import get_llm_client
 from core.database import get_database
 from config.settings import settings
@@ -46,7 +46,7 @@ def _init_dependencies():
     """初始化全局依赖。"""
     global _learner_manager, _llm, _db
     if _learner_manager is None:
-        _learner_manager = LearnerModelManager()
+        _learner_manager = get_learner_model_manager()
     if _llm is None:
         _llm = get_llm_client()
     if _db is None:
@@ -123,6 +123,12 @@ def teach_node(state: LearningState) -> LearningState:
     mastery = state["mastery"]
     is_correct = state.get("is_correct")
     question = state.get("question", "")
+    context = state.get("context", {})
+    chat_history = context.get("chat_history", [])
+    recent_history = chat_history[-20:] if isinstance(chat_history, list) else []
+    history_text = "\n".join(
+        f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in recent_history
+    )
 
     # 基于掌握度选择系统提示词
     if mastery < 0.3:
@@ -172,6 +178,7 @@ def teach_node(state: LearningState) -> LearningState:
     else:
         user_prompt = (
             f"学生关于「{knowledge_id}」的问题是：{question}\n"
+            f"最近对话（最多10轮）：\n{history_text if history_text else '（无历史）'}\n"
             f"请通过提问引导学生自己思考，不要直接给答案。"
         )
 

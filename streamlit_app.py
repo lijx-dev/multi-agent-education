@@ -18,13 +18,21 @@ from datetime import datetime
 from api.orchestrator import AgentOrchestrator
 from core.knowledge_graph import build_sample_math_graph, KnowledgeGraph, KnowledgeNode
 from core.database import get_database
+from core.llm import get_llm_client
 
 # 页面配置
 st.set_page_config(
     page_title="多Agent智能学习系统",
     page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# 移动端适配：隐藏右上角菜单与底部水印 + 输入控件尽量占满宽度
+st.markdown(
+    "<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} "
+    ".stTextInput input, .stTextArea textarea {width: 100% !important;}</style>",
+    unsafe_allow_html=True,
 )
 
 # 初始化Session State
@@ -38,6 +46,8 @@ if "current_knowledge" not in st.session_state:
     st.session_state.current_knowledge = "arithmetic"
 if "show_progress" not in st.session_state:
     st.session_state.show_progress = False
+if "generated_question" not in st.session_state:
+    st.session_state.generated_question = ""
 
 # 侧边栏：学生信息与设置
 with st.sidebar:
@@ -72,11 +82,11 @@ with st.sidebar:
     st.divider()
 
     # 学习进度快速查看
-    if st.button("📊 查看我的学习进度"):
+    if st.button("📊 查看我的学习进度", use_container_width=True):
         st.session_state.show_progress = True
 
     # 清空聊天记录
-    if st.button("🗑️ 清空聊天记录"):
+    if st.button("🗑️ 清空聊天记录", use_container_width=True):
         st.session_state.messages = []
         st.success("聊天记录已清空！")
 
@@ -110,7 +120,8 @@ with tab1:
                         st.session_state.orchestrator.ask_question(
                             st.session_state.learner_id,
                             st.session_state.current_knowledge,
-                            prompt
+                            prompt,
+                            chat_history=st.session_state.messages[-20:]
                         )
                     )
 
@@ -136,10 +147,45 @@ with tab2:
 
     with col1:
         st.subheader("题目")
+        question_type = st.radio(
+            "题型",
+            ("自动", "选择", "填空", "解答"),
+            horizontal=True,
+        )
+
+        # 自动出题按钮：替代手动输入（仍保留可编辑，以便二次微调）
+        if st.button("✨ 自动出题", type="primary", use_container_width=True):
+            with st.spinner("正在自动出题..."):
+                try:
+                    learner_model = st.session_state.orchestrator.learner_model_manager.get_model(
+                        st.session_state.learner_id
+                    )
+                    mastery = 0.1
+                    if learner_model:
+                        try:
+                            mastery = learner_model.get_state(st.session_state.current_knowledge).mastery
+                        except Exception:
+                            mastery = 0.1
+
+                    kg_node = knowledge_graph.nodes.get(st.session_state.current_knowledge)
+                    knowledge_point = (
+                        f"{kg_node.name}（{st.session_state.current_knowledge}）" if kg_node else st.session_state.current_knowledge
+                    )
+
+                    llm = get_llm_client()
+                    st.session_state.generated_question = llm.generate_question(
+                        knowledge_point=knowledge_point,
+                        mastery=mastery,
+                        question_type=question_type,  # type: ignore[arg-type]
+                    )
+                except Exception as e:
+                    st.error(f"自动出题失败：{str(e)}")
+
         question_text = st.text_area(
-            "输入题目内容",
-            height=150,
-            placeholder="例如：解方程 2x + 3 = 7"
+            "题目内容（可编辑）",
+            height=160,
+            value=st.session_state.generated_question,
+            placeholder="点击上方「自动出题」生成题目，或在此手动编辑"
         )
 
         st.subheader("你的答案")
@@ -157,7 +203,7 @@ with tab2:
             value=30
         )
 
-        if st.button("🚀 提交答案", type="primary"):
+        if st.button("🚀 提交答案", type="primary", use_container_width=True):
             if not question_text:
                 st.warning("请先输入题目内容！")
             else:
@@ -171,7 +217,9 @@ with tab2:
                                 st.session_state.learner_id,
                                 st.session_state.current_knowledge,
                                 is_correct == "是的，我答对了",
-                                time_spent
+                                time_spent,
+                                question_text=question_text,
+                                answer_text=user_answer
                             )
                         )
 
@@ -251,8 +299,8 @@ with tab2:
 
             # 配置图谱显示
             config = Config(
-                width=500,
-                height=500,
+                width=300,
+                height=300,
                 directed=True,
                 physics=True,
                 hierarchical=False

@@ -9,6 +9,7 @@ import sqlite3
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from core.learner_model import LearnerModel, KnowledgeState, BKTParams
@@ -19,15 +20,17 @@ logger = logging.getLogger(__name__)
 class Database:
     """SQLite 数据库管理器。"""
 
-    def __init__(self, db_path: str = "../data/edu_agent.db"):
+    def __init__(self, db_path: Optional[str] = None):
         """
         初始化数据库。
 
         Args:
             db_path: 数据库文件路径
         """
-        import os
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        if db_path is None:
+            project_root = Path(__file__).resolve().parent.parent
+            db_path = str(project_root / "data" / "edu_agent.db")
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         self.db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None

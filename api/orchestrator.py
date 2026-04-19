@@ -6,10 +6,10 @@ Agent 编排器 -- 完全基于 LangGraph 重构。
 3. 支持跨会话的短期和长期记忆
 4. 简化了 Agent 之间的协作逻辑
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from core.graph import get_learning_graph
-from core.learner_model_manager import LearnerModelManager
+from core.learner_model_manager import get_learner_model_manager
 from core.database import get_database
 from core.knowledge_graph import build_sample_math_graph
 
@@ -20,7 +20,7 @@ class AgentOrchestrator:
     def __init__(self) -> None:
         """初始化编排器。"""
         self.graph = get_learning_graph()
-        self.learner_model_manager = LearnerModelManager()
+        self.learner_model_manager = get_learner_model_manager()
         self.db = get_database()
         self.knowledge_graph = build_sample_math_graph()
 
@@ -62,7 +62,13 @@ class AgentOrchestrator:
         )
 
     async def submit_answer(
-        self, learner_id: str, knowledge_id: str, is_correct: bool, time_spent: float = 0
+        self,
+        learner_id: str,
+        knowledge_id: str,
+        is_correct: bool,
+        time_spent: float = 0,
+        question_text: str = "",
+        answer_text: str = "",
     ) -> List[Dict[str, Any]]:
         """
         学生提交答案 -> 触发 LangGraph 学习流程。
@@ -81,6 +87,8 @@ class AgentOrchestrator:
             "learner_id": learner_id,
             "knowledge_id": knowledge_id,
             "is_correct": is_correct,
+            "question": question_text,
+            "answer": answer_text,
             "time_spent_seconds": time_spent,
             "mastery": 0.1,
             "attempts": 0,
@@ -153,7 +161,11 @@ class AgentOrchestrator:
         return events
 
     async def ask_question(
-        self, learner_id: str, knowledge_id: str, question: str
+        self,
+        learner_id: str,
+        knowledge_id: str,
+        question: str,
+        chat_history: Optional[List[Dict[str, str]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         学生提问 -> 触发 LangGraph 问答流程。
@@ -176,7 +188,7 @@ class AgentOrchestrator:
             "attempts": 0,
             "hint_level": 1,
             "next_action": "assess",
-            "context": {}
+            "context": {"chat_history": chat_history or []}
         }
 
         # 配置线程ID（用于记忆）
@@ -241,7 +253,7 @@ class AgentOrchestrator:
         Returns:
             dict: 学习进度信息
         """
-        model = self.learner_model_manager.get_model(learner_id)
+        model = self.learner_model_manager.get_or_create_model(learner_id)
         if not model:
             return {"learner_id": learner_id, "status": "no_data"}
 

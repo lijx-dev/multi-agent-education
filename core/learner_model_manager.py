@@ -92,7 +92,14 @@ class LearnerModelManager:
         Returns:
             Optional[LearnerModel]: 学习者模型实例，不存在则返回None
         """
-        return self._learner_models.get(learner_id)
+        model = self._learner_models.get(learner_id)
+        if model:
+            return model
+        # 未命中内存时尝试从数据库懒加载，避免跨模块实例不一致导致“查不到进度”
+        loaded = self._db.load_learner_model(learner_id, self._default_bkt_params)
+        if loaded:
+            self._learner_models[learner_id] = loaded
+        return loaded
 
     def remove_model(self, learner_id: str) -> bool:
         """
@@ -118,3 +125,14 @@ class LearnerModelManager:
             list[str]: 学习者ID列表
         """
         return list(self._learner_models.keys())
+
+
+_learner_model_manager_singleton: Optional[LearnerModelManager] = None
+
+
+def get_learner_model_manager() -> LearnerModelManager:
+    """获取 LearnerModelManager 全局单例，保证全项目读写同一份学生状态。"""
+    global _learner_model_manager_singleton
+    if _learner_model_manager_singleton is None:
+        _learner_model_manager_singleton = LearnerModelManager()
+    return _learner_model_manager_singleton
