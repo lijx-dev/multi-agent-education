@@ -204,6 +204,20 @@ with tab2:
             index=1
         )
 
+        error_type = "unknown"
+        if is_correct == "不，我答错了":
+            error_type = st.selectbox(
+                "错因（用于 SM-2 质量估计）",
+                ("concept", "careless", "unknown"),
+                index=0,
+                format_func=lambda x: {
+                    "concept": "概念不清",
+                    "careless": "粗心失误",
+                    "unknown": "不确定",
+                }[x],
+                help="概念错误与粗心会影响复习间隔的计算",
+            )
+
         time_spent = st.number_input(
             "花费时间（秒）",
             min_value=0,
@@ -226,7 +240,8 @@ with tab2:
                                 is_correct == "是的，我答对了",
                                 time_spent,
                                 question_text=question_text,
-                                answer_text=user_answer
+                                answer_text=user_answer,
+                                error_type=error_type if is_correct == "不，我答错了" else None,
                             )
                         )
 
@@ -328,6 +343,44 @@ with tab2:
 # --- Tab 3: 学习进度 ---
 with tab3:
     st.header("我的学习进度")
+
+    with st.expander("📅 SM-2 复习计划（间隔重复）", expanded=True):
+        st.caption("提交答题后会根据掌握度、耗时与错因更新复习间隔；到期知识点会出现在「今日到期」。")
+        plan = st.session_state.orchestrator.get_review_plan(st.session_state.learner_id)
+        if plan.get("item_count", 0) == 0:
+            st.info("暂无复习记录：请先完成几次「答题练习」，系统将自动生成 SM-2 日程。")
+        else:
+            due = plan.get("due") or []
+            if due:
+                st.warning(f"今日/已到期需复习：**{len(due)}** 个知识点")
+                st.dataframe(
+                    pd.DataFrame(due)[
+                        ["name", "next_review", "overdue_days", "interval_days", "easiness_factor", "repetition"]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.success("当前没有已逾期的复习项，保持节奏即可。")
+
+            sched = plan.get("weekly_schedule") or {}
+            if sched:
+                st.subheader("未来 7 天复习日程")
+                sched_rows = [{"日期": d, "知识点数": len(ids), "知识点": "、".join(ids)} for d, ids in sorted(sched.items())]
+                st.dataframe(pd.DataFrame(sched_rows), use_container_width=True, hide_index=True)
+
+            up = plan.get("upcoming") or []
+            if up:
+                st.subheader("即将复习（按时间排序）")
+                log_cols = [c for c in ["name", "next_review", "interval_days", "easiness_factor", "repetition", "is_due"] if c in pd.DataFrame(up).columns]
+                st.dataframe(pd.DataFrame(up)[log_cols], use_container_width=True, hide_index=True)
+
+            with st.expander("到期后练习反馈（验证间隔重复效果）"):
+                for row in up[:8]:
+                    logs = row.get("due_cycle_log") or []
+                    if logs:
+                        st.markdown(f"**{row.get('name')}**")
+                        st.json(logs[-5:])
 
     # 获取学习者进度
     progress = st.session_state.orchestrator.get_learner_progress(st.session_state.learner_id)

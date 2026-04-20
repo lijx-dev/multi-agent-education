@@ -9,12 +9,13 @@ Agent 编排器 -- 完全基于 LangGraph 重构。
 import asyncio
 import logging
 from time import perf_counter
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 from core.graph import get_learning_graph
 from core.learner_model_manager import get_learner_model_manager
 from core.database import get_database
 from core.knowledge_graph import build_sample_math_graph
+from core.event_bus import Event, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class AgentOrchestrator:
         time_spent: float = 0,
         question_text: str = "",
         answer_text: str = "",
+        error_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         学生提交答案 -> 触发 LangGraph 学习流程。
@@ -102,7 +104,9 @@ class AgentOrchestrator:
             "attempts": current_state.attempts,
             "hint_level": 1,
             "next_action": "assess",
-            "context": {}
+            "context": {
+                "error_type": (error_type or "unknown").strip().lower() or "unknown",
+            },
         }
 
         # 配置线程ID（用于记忆）
@@ -164,6 +168,22 @@ class AgentOrchestrator:
         learner_model = self.learner_model_manager.get_or_create_model(learner_id)
         if learner_model:
             await asyncio.to_thread(self.db.save_learner_model, learner_model)
+
+        err = (error_type or "unknown").strip().lower() or "unknown"
+        await self.event_bus.publish(
+            Event(
+                type=EventType.MASTERY_UPDATED,
+                source="AgentOrchestrator",
+                learner_id=learner_id,
+                data={
+                    "knowledge_id": knowledge_id,
+                    "mastery": result["mastery"],
+                    "is_correct": is_correct,
+                    "time_spent_seconds": time_spent,
+                    "error_type": err,
+                },
+            )
+        )
 
         elapsed_ms = (perf_counter() - started) * 1000
         logger.info(
@@ -316,6 +336,12 @@ class AgentOrchestrator:
             return "proficient"
         else:
             return "mastered"
+
+    def get_review_plan(self, learner_id: str) -> dict[str, Any]:
+        """间隔重复（SM-2）复习计划快照，供前端展示。"""
+        if not learner_id.strip():
+            return {"learner_id": learner_id, "error": "learner_id 不能为空"}
+        return self.curriculum.build_review_plan_snapshot(learner_id.strip())
 
     def get_event_bus_stats(self) -> dict:
         """

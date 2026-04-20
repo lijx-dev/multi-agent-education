@@ -19,6 +19,7 @@ class SubmissionRequest(BaseModel):
     knowledge_id: str
     is_correct: bool
     time_spent_seconds: float = 0.0
+    error_type: str | None = None  # 答错时可选：careless / concept / unknown
 
 
 class QuestionRequest(BaseModel):
@@ -52,6 +53,7 @@ async def submit_answer(req: SubmissionRequest, request: Request) -> dict[str, A
             req.knowledge_id,
             req.is_correct,
             req.time_spent_seconds,
+            error_type=req.error_type,
         )
         return {
             "learner_id": req.learner_id,
@@ -135,6 +137,20 @@ async def get_progress(learner_id: str, request: Request) -> dict[str, Any]:
 async def health_check() -> dict[str, str]:
     """健康检查。"""
     return {"status": "ok"}
+
+
+@router.get("/review-plan/{learner_id}")
+async def get_review_plan(learner_id: str, request: Request) -> dict[str, Any]:
+    """SM-2 复习计划：到期项、未来 7 天日程、即将复习知识点。"""
+    try:
+        if not learner_id.strip():
+            raise ValueError("learner_id 不能为空")
+        return request.app.state.orchestrator.get_review_plan(learner_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("review-plan failed learner=%s", learner_id)
+        raise HTTPException(status_code=500, detail="内部服务异常")
 
 
 @router.get("/monitor/summary")

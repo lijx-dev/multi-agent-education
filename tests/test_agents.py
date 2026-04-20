@@ -7,6 +7,8 @@
 """
 
 import asyncio
+from datetime import datetime, timedelta
+
 import pytest
 
 from core.event_bus import EventBus, Event, EventType
@@ -169,11 +171,12 @@ def test_sm2_ef_adjustment():
 
 def test_sm2_due_items():
     sr = SpacedRepetition()
-    item1 = ReviewItem(knowledge_id="a")
-    item2 = ReviewItem(knowledge_id="b")
+    past = datetime.now() - timedelta(days=1)
+    item1 = ReviewItem(knowledge_id="a", next_review=past, total_reviews=1)
+    item2 = ReviewItem(knowledge_id="b", next_review=past, total_reviews=1)
 
     due = sr.get_due_items([item1, item2])
-    assert len(due) == 2  # Both are due (next_review = now)
+    assert len(due) == 2
 
 
 # ─── KnowledgeGraph Tests ───

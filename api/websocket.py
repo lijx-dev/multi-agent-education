@@ -70,10 +70,13 @@ async def websocket_endpoint(websocket: WebSocket, learner_id: str):
             if action == "submit":
                 pending_task = asyncio.create_task(
                     orch.submit_answer(
-                    learner_id,
-                    data.get("knowledge_id", ""),
-                    data.get("is_correct", False),
-                    data.get("time_spent_seconds", 0),
+                        learner_id,
+                        data.get("knowledge_id", ""),
+                        data.get("is_correct", False),
+                        data.get("time_spent_seconds", 0),
+                        question_text=data.get("question_text", ""),
+                        answer_text=data.get("answer_text", ""),
+                        error_type=data.get("error_type"),
                     )
                 )
             elif action == "question":
