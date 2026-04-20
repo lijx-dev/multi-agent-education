@@ -94,6 +94,7 @@ class EventBus:
         # 按优先级分组的订阅者
         self._subscribers: Dict[EventType, Dict[EventPriority, List[EventHandler]]] = {}
         self._event_history: List[Event] = []
+        self._dead_letters: List[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
 
         # 事件统计
@@ -218,14 +219,31 @@ class EventBus:
             handler: 事件处理器
             event: 事件
         """
-        try:
-            await handler(event)
-            self._stats["total_handled"] += 1
-        except Exception:
-            logger.exception(
-                "Error in handler for event %s from %s",
-                event.type.value, event.source,
-            )
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                await handler(event)
+                self._stats["total_handled"] += 1
+                return
+            except Exception:
+                logger.exception(
+                    "Error in handler for event %s from %s (attempt=%d/%d)",
+                    event.type.value,
+                    event.source,
+                    attempt + 1,
+                    max_retries + 1,
+                )
+                if attempt < max_retries:
+                    await asyncio.sleep(0.05 * (attempt + 1))
+        self._dead_letters.append(
+            {
+                "event_id": event.id,
+                "type": event.type.value,
+                "source": event.source,
+                "learner_id": event.learner_id,
+                "timestamp": event.timestamp.isoformat(),
+            }
+        )
 
     def _update_stats(self, event: Event) -> None:
         """
@@ -293,6 +311,7 @@ class EventBus:
                 for type_subs in self._subscribers.values()
                 for handlers in type_subs.values()
             ),
+            "dead_letter_count": len(self._dead_letters),
         }
 
     def clear_history(self) -> None:

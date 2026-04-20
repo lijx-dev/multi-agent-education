@@ -16,6 +16,7 @@ from typing import List
 
 from .base_agent import BaseAgent
 from core.event_bus import Event, EventType
+from core.database import get_database
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,34 @@ class LearnerEngagement:
         recent = self.recent_response_times[-10:]
         return sum(recent) / max(1, len(recent)) if recent else 0.0
 
+    def to_dict(self) -> dict:
+        return {
+            "learner_id": self.learner_id,
+            "state": self.state.value,
+            "recent_response_times": self.recent_response_times,
+            "recent_results": self.recent_results,
+            "session_start": self.session_start.isoformat(),
+            "last_activity": self.last_activity.isoformat(),
+            "consecutive_errors": self.consecutive_errors,
+            "consecutive_correct": self.consecutive_correct,
+            "total_interactions": self.total_interactions,
+            "encouragement_count": self.encouragement_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "LearnerEngagement":
+        obj = cls(learner_id=data.get("learner_id", ""))
+        obj.state = LearningState(data.get("state", LearningState.FOCUSED.value))
+        obj.recent_response_times = list(data.get("recent_response_times", []))
+        obj.recent_results = list(data.get("recent_results", []))
+        obj.session_start = datetime.fromisoformat(data.get("session_start", datetime.now().isoformat()))
+        obj.last_activity = datetime.fromisoformat(data.get("last_activity", datetime.now().isoformat()))
+        obj.consecutive_errors = int(data.get("consecutive_errors", 0))
+        obj.consecutive_correct = int(data.get("consecutive_correct", 0))
+        obj.total_interactions = int(data.get("total_interactions", 0))
+        obj.encouragement_count = int(data.get("encouragement_count", 0))
+        return obj
+
 
 class EngagementAgent(BaseAgent):
     """互动Agent：监测学习状态，适时干预。"""
@@ -104,6 +133,7 @@ class EngagementAgent(BaseAgent):
         """
         super().__init__(*args, **kwargs)
         self._engagements: dict[str, LearnerEngagement] = {}
+        self._db = get_database()
 
     @property
     def subscribed_events(self) -> List[EventType]:
@@ -130,8 +160,18 @@ class EngagementAgent(BaseAgent):
             LearnerEngagement: 学习者互动状态
         """
         if learner_id not in self._engagements:
-            self._engagements[learner_id] = LearnerEngagement(learner_id)
+            saved = self._db.load_agent_state(self.name, learner_id)
+            if saved:
+                try:
+                    self._engagements[learner_id] = LearnerEngagement.from_dict(saved)
+                except Exception:
+                    self._engagements[learner_id] = LearnerEngagement(learner_id)
+            else:
+                self._engagements[learner_id] = LearnerEngagement(learner_id)
         return self._engagements[learner_id]
+
+    def _persist_engagement(self, eng: LearnerEngagement) -> None:
+        self._db.save_agent_state(self.name, eng.learner_id, eng.to_dict())
 
     async def handle_event(self, event: Event) -> None:
         """
@@ -177,6 +217,7 @@ class EngagementAgent(BaseAgent):
             eng.recent_results = eng.recent_results[-20:]
         if len(eng.recent_response_times) > 20:
             eng.recent_response_times = eng.recent_response_times[-20:]
+        self._persist_engagement(eng)
 
     async def _track_activity(self, event: Event) -> None:
         """
@@ -188,6 +229,7 @@ class EngagementAgent(BaseAgent):
         eng = self._get_engagement(event.learner_id)
         eng.last_activity = datetime.now()
         eng.total_interactions += 1
+        self._persist_engagement(eng)
 
     async def _analyze_engagement(self, event: Event) -> None:
         """
@@ -200,6 +242,7 @@ class EngagementAgent(BaseAgent):
         old_state = eng.state
         new_state = self._detect_state(eng)
         eng.state = new_state
+        self._persist_engagement(eng)
 
         if new_state != old_state:
             logger.info(

@@ -1,11 +1,11 @@
 """API 路由定义。"""
-from fastapi import APIRouter, HTTPException
+import logging
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from typing import List, Optional, Any
-
-from api.orchestrator import orchestrator
+from typing import Any
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class SubmissionRequest(BaseModel):
@@ -27,13 +27,21 @@ class MessageRequest(BaseModel):
     knowledge_id: str = "general"
 
 
+def _validate_required_fields(learner_id: str, knowledge_id: str) -> None:
+    if not learner_id.strip():
+        raise ValueError("learner_id 不能为空")
+    if not knowledge_id.strip():
+        raise ValueError("knowledge_id 不能为空")
+
+
 @router.post("/submit")
-async def submit_answer(req: SubmissionRequest) -> dict[str, Any]:
+async def submit_answer(req: SubmissionRequest, request: Request) -> dict[str, Any]:
     """
     学生提交答题结果。
     """
     try:
-        events = await orchestrator.submit_answer(
+        _validate_required_fields(req.learner_id, req.knowledge_id)
+        events = await request.app.state.orchestrator.submit_answer(
             req.learner_id,
             req.knowledge_id,
             req.is_correct,
@@ -43,17 +51,23 @@ async def submit_answer(req: SubmissionRequest) -> dict[str, Any]:
             "learner_id": req.learner_id,
             "events": events,
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("submit failed learner=%s knowledge=%s", req.learner_id, req.knowledge_id)
+        raise HTTPException(status_code=500, detail="内部服务异常")
 
 
 @router.post("/question")
-async def ask_question(req: QuestionRequest) -> dict[str, Any]:
+async def ask_question(req: QuestionRequest, request: Request) -> dict[str, Any]:
     """
     学生提问。
     """
     try:
-        events = await orchestrator.ask_question(
+        _validate_required_fields(req.learner_id, req.knowledge_id)
+        if not req.question.strip():
+            raise ValueError("question 不能为空")
+        events = await request.app.state.orchestrator.ask_question(
             req.learner_id,
             req.knowledge_id,
             req.question,
@@ -62,17 +76,24 @@ async def ask_question(req: QuestionRequest) -> dict[str, Any]:
             "learner_id": req.learner_id,
             "events": events,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("question failed learner=%s knowledge=%s", req.learner_id, req.knowledge_id)
+        raise HTTPException(status_code=500, detail="内部服务异常")
 
 
 @router.post("/message")
-async def send_message(req: MessageRequest) -> dict[str, Any]:
+async def send_message(req: MessageRequest, request: Request) -> dict[str, Any]:
     """
     学生发送自由消息。
     """
     try:
-        events = await orchestrator.send_message(
+        if not req.learner_id.strip():
+            raise ValueError("learner_id 不能为空")
+        if not req.message.strip():
+            raise ValueError("message 不能为空")
+        events = await request.app.state.orchestrator.send_message(
             req.learner_id,
             req.message,
             req.knowledge_id,
@@ -81,19 +102,27 @@ async def send_message(req: MessageRequest) -> dict[str, Any]:
             "learner_id": req.learner_id,
             "events": events,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("message failed learner=%s knowledge=%s", req.learner_id, req.knowledge_id)
+        raise HTTPException(status_code=500, detail="内部服务异常")
 
 
 @router.get("/progress/{learner_id}")
-async def get_progress(learner_id: str) -> dict[str, Any]:
+async def get_progress(learner_id: str, request: Request) -> dict[str, Any]:
     """
     获取学习者进度。
     """
     try:
-        return orchestrator.get_learner_progress(learner_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        if not learner_id.strip():
+            raise ValueError("learner_id 不能为空")
+        return request.app.state.orchestrator.get_learner_progress(learner_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("progress failed learner=%s", learner_id)
+        raise HTTPException(status_code=500, detail="内部服务异常")
 
 
 @router.get("/health")

@@ -14,6 +14,7 @@ from typing import List
 
 from .base_agent import BaseAgent
 from core.event_bus import Event, EventType
+from core.database import get_database
 from core.knowledge_graph import KnowledgeGraph, build_sample_math_graph
 from core.spaced_repetition import SpacedRepetition, ReviewItem
 from config.settings import settings
@@ -32,6 +33,7 @@ class CurriculumAgent(BaseAgent):
         self.knowledge_graph: KnowledgeGraph = build_sample_math_graph()
         self.sr = SpacedRepetition()
         self._review_items: dict[str, dict[str, ReviewItem]] = {}
+        self._db = get_database()
 
     @property
     def subscribed_events(self) -> List[EventType]:
@@ -75,6 +77,7 @@ class CurriculumAgent(BaseAgent):
         quality = self._mastery_to_quality(mastery)
         review_item = self._get_review_item(learner_id, knowledge_id)
         self.sr.review(review_item, quality)
+        self._persist_review_items(learner_id)
 
         if mastery >= settings.mastery_threshold:
             await self._check_and_recommend_next(learner_id)
@@ -115,11 +118,32 @@ class CurriculumAgent(BaseAgent):
             ReviewItem: 复习条目
         """
         if learner_id not in self._review_items:
-            self._review_items[learner_id] = {}
+            self._review_items[learner_id] = self._load_review_items(learner_id)
         items = self._review_items[learner_id]
         if knowledge_id not in items:
             items[knowledge_id] = ReviewItem(knowledge_id=knowledge_id)
+            self._persist_review_items(learner_id)
         return items[knowledge_id]
+
+    def _load_review_items(self, learner_id: str) -> dict[str, ReviewItem]:
+        payload = self._db.load_agent_state(self.name, learner_id)
+        if not payload:
+            return {}
+        result: dict[str, ReviewItem] = {}
+        raw_items = payload.get("items", {})
+        for kid, item_data in raw_items.items():
+            try:
+                result[kid] = ReviewItem(**item_data)
+            except Exception:
+                continue
+        return result
+
+    def _persist_review_items(self, learner_id: str) -> None:
+        items = self._review_items.get(learner_id, {})
+        payload = {
+            "items": {kid: item.model_dump(mode="json") for kid, item in items.items()}
+        }
+        self._db.save_agent_state(self.name, learner_id, payload)
 
     async def _check_and_recommend_next(self, learner_id: str) -> None:
         """

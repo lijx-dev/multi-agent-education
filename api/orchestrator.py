@@ -6,12 +6,17 @@ Agent 编排器 -- 完全基于 LangGraph 重构。
 3. 支持跨会话的短期和长期记忆
 4. 简化了 Agent 之间的协作逻辑
 """
+import asyncio
+import logging
+from time import perf_counter
 from typing import List, Dict, Any, Optional
 
 from core.graph import get_learning_graph
 from core.learner_model_manager import get_learner_model_manager
 from core.database import get_database
 from core.knowledge_graph import build_sample_math_graph
+
+logger = logging.getLogger(__name__)
 
 
 class AgentOrchestrator:
@@ -82,7 +87,10 @@ class AgentOrchestrator:
         Returns:
             List[Dict[str, Any]]: 处理结果列表
         """
-        # 构建初始状态
+        model = self.learner_model_manager.get_or_create_model(learner_id)
+        current_state = model.get_state(knowledge_id)
+
+        # 构建初始状态（从真实模型读取，避免固定0.1导致状态错误）
         initial_state = {
             "learner_id": learner_id,
             "knowledge_id": knowledge_id,
@@ -90,8 +98,8 @@ class AgentOrchestrator:
             "question": question_text,
             "answer": answer_text,
             "time_spent_seconds": time_spent,
-            "mastery": 0.1,
-            "attempts": 0,
+            "mastery": current_state.mastery,
+            "attempts": current_state.attempts,
             "hint_level": 1,
             "next_action": "assess",
             "context": {}
@@ -100,6 +108,7 @@ class AgentOrchestrator:
         # 配置线程ID（用于记忆）
         config = {"configurable": {"thread_id": learner_id}}
 
+        started = perf_counter()
         # 运行LangGraph
         result = await self.graph.ainvoke(initial_state, config=config)
 
@@ -140,23 +149,30 @@ class AgentOrchestrator:
                 "level": self._get_mastery_level(result["mastery"]),
             }
         })
-        from core.database import get_database
-        db = get_database()
-
         # 保存学习历史
-        db.add_learning_history(
+        await asyncio.to_thread(
+            self.db.add_learning_history,
             learner_id=learner_id,
             knowledge_id=knowledge_id,
             event_type="answer_submitted",
             is_correct=is_correct,
             mastery=result["mastery"],
-            time_spent=time_spent
+            time_spent=time_spent,
         )
 
         # 保存学习者模型状态（修正：只传 model 对象）
-        learner_model = self.learner_model_manager.get_model(learner_id)
+        learner_model = self.learner_model_manager.get_or_create_model(learner_id)
         if learner_model:
-            db.save_learner_model(learner_model)
+            await asyncio.to_thread(self.db.save_learner_model, learner_model)
+
+        elapsed_ms = (perf_counter() - started) * 1000
+        logger.info(
+            "[orchestrator.submit_answer] learner=%s knowledge=%s elapsed_ms=%.1f events=%d",
+            learner_id,
+            knowledge_id,
+            elapsed_ms,
+            len(events),
+        )
 
         return events
 
@@ -178,14 +194,17 @@ class AgentOrchestrator:
         Returns:
             List[Dict[str, Any]]: 处理结果列表
         """
-        # 构建初始状态
+        model = self.learner_model_manager.get_or_create_model(learner_id)
+        current_state = model.get_state(knowledge_id)
+
+        # 构建初始状态（使用当前掌握度）
         initial_state = {
             "learner_id": learner_id,
             "knowledge_id": knowledge_id,
             "question": question,
             "is_correct": None,
-            "mastery": 0.1,
-            "attempts": 0,
+            "mastery": current_state.mastery,
+            "attempts": current_state.attempts,
             "hint_level": 1,
             "next_action": "assess",
             "context": {"chat_history": chat_history or []}
@@ -194,6 +213,7 @@ class AgentOrchestrator:
         # 配置线程ID（用于记忆）
         config = {"configurable": {"thread_id": learner_id}}
 
+        started = perf_counter()
         # 运行LangGraph
         result = await self.graph.ainvoke(initial_state, config=config)
 
@@ -224,6 +244,14 @@ class AgentOrchestrator:
                 }
             })
 
+        elapsed_ms = (perf_counter() - started) * 1000
+        logger.info(
+            "[orchestrator.ask_question] learner=%s knowledge=%s elapsed_ms=%.1f events=%d",
+            learner_id,
+            knowledge_id,
+            elapsed_ms,
+            len(events),
+        )
         return events
 
     async def send_message(
@@ -297,5 +325,3 @@ class AgentOrchestrator:
             dict: 统计信息
         """
         return self.event_bus.get_stats()
-
-orchestrator = AgentOrchestrator()

@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     app.state.orchestrator = orchestrator
     logging.getLogger(__name__).info("Agent orchestrator started with 5 agents")
     yield
+    try:
+        app.state.orchestrator.db.close()
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to close orchestrator resources")
     logging.getLogger(__name__).info("Shutting down")
 
 

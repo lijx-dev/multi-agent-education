@@ -97,6 +97,21 @@ class Database:
                 FOREIGN KEY (learner_id) REFERENCES learner_models(learner_id)
             )
         ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_learning_history_learner_ts
+            ON learning_history (learner_id, timestamp DESC)
+        ''')
+
+        # Agent状态持久化（解决服务重启后内存状态丢失）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS agent_states (
+                agent_name TEXT NOT NULL,
+                learner_id TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (agent_name, learner_id)
+            )
+        ''')
 
         conn.commit()
         logger.info("Database tables initialized")
@@ -294,6 +309,51 @@ class Database:
         except Exception as e:
             logger.exception("Failed to get learning history", exc_info=e)
             return []
+
+    def save_agent_state(self, agent_name: str, learner_id: str, state_data: Dict[str, Any]) -> bool:
+        """保存 Agent 的学习者局部状态。"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT OR REPLACE INTO agent_states
+                (agent_name, learner_id, state_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ''',
+                (agent_name, learner_id, json.dumps(state_data), datetime.now().isoformat()),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.exception("Failed to save agent state", exc_info=e)
+            return False
+
+    def load_agent_state(self, agent_name: str, learner_id: str) -> Optional[Dict[str, Any]]:
+        """加载 Agent 的学习者局部状态。"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT state_json FROM agent_states
+                WHERE agent_name = ? AND learner_id = ?
+                ''',
+                (agent_name, learner_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return json.loads(row["state_json"])
+        except Exception as e:
+            logger.exception("Failed to load agent state", exc_info=e)
+            return None
+
+    def close(self) -> None:
+        """关闭数据库连接。"""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
 
 # 全局单例

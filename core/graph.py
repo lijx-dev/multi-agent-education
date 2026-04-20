@@ -7,6 +7,7 @@ LangGraph 学习状态图 -- 替代原事件总线的核心编排。
 4. 工具调用：预留工具调用接口
 """
 import logging
+import asyncio
 from typing import TypedDict, Optional, Dict, Any
 
 from langgraph.graph import StateGraph, END
@@ -53,7 +54,7 @@ def _init_dependencies():
         _db = get_database()
 
 
-def assess_node(state: LearningState) -> LearningState:
+async def assess_node(state: LearningState) -> LearningState:
     """
     评估节点：更新掌握度，检测薄弱点。
 
@@ -79,13 +80,16 @@ def assess_node(state: LearningState) -> LearningState:
         attempts = state_obj.attempts
 
         # 记录学习事件
-        _db.log_learning_event(
-            learner_id, knowledge_id, "submission",
-            {"is_correct": is_correct, "mastery": mastery}
+        await asyncio.to_thread(
+            _db.log_learning_event,
+            learner_id,
+            knowledge_id,
+            "submission",
+            {"is_correct": is_correct, "mastery": mastery},
         )
 
         # 保存模型
-        _learner_manager.save_model(learner_id)
+        await asyncio.to_thread(_learner_manager.save_model, learner_id)
     else:
         # 只是提问，不更新掌握度
         state_obj = model.get_state(knowledge_id)
@@ -107,7 +111,7 @@ def assess_node(state: LearningState) -> LearningState:
         "next_action": next_action
     }
 
-def teach_node(state: LearningState) -> LearningState:
+async def teach_node(state: LearningState) -> LearningState:
     """
     教学节点：生成苏格拉底式教学回复。
 
@@ -183,10 +187,11 @@ def teach_node(state: LearningState) -> LearningState:
         )
 
     # 调用LLM生成回复
-    response = _llm.generate(
+    response = await asyncio.to_thread(
+        _llm.generate,
         prompt=user_prompt,
         system_prompt=system_prompt,
-        temperature=0.7
+        temperature=0.7,
     )
 
     return {
@@ -196,7 +201,7 @@ def teach_node(state: LearningState) -> LearningState:
     }
 
 
-def hint_node(state: LearningState) -> LearningState:
+async def hint_node(state: LearningState) -> LearningState:
     """
     提示节点：生成分级提示。
 
@@ -241,10 +246,11 @@ def hint_node(state: LearningState) -> LearningState:
     user_prompt = f"请给学生提供一个关于「{knowledge_id}」的提示。"
 
     # 调用LLM生成提示
-    hint_text = _llm.generate(
+    hint_text = await asyncio.to_thread(
+        _llm.generate,
         prompt=user_prompt,
         system_prompt=system_prompt,
-        temperature=0.5
+        temperature=0.5,
     )
 
     return {
