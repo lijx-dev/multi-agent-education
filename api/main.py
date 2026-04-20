@@ -10,15 +10,17 @@ FastAPI 应用入口。
 
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router
 from api.websocket import ws_router
 from api.orchestrator import AgentOrchestrator
+from core.observability import record_http_request
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +67,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def observability_middleware(request: Request, call_next):
+    """记录 API 延迟与状态码（跳过文档等静态端点）。"""
+    path = request.url.path
+    if path in ("/docs", "/redoc", "/openapi.json", "/favicon.ico"):
+        return await call_next(request)
+    start = time.perf_counter()
+    response = await call_next(request)
+    latency_ms = (time.perf_counter() - start) * 1000.0
+    if path.startswith("/api/"):
+        record_http_request(path, response.status_code, latency_ms)
+    return response
+
 
 app.include_router(router, prefix="/api/v1")
 app.include_router(ws_router)

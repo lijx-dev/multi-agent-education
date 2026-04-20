@@ -1,8 +1,14 @@
 """API 路由定义。"""
 import logging
-from fastapi import APIRouter, HTTPException, Request
+from datetime import datetime
+from typing import Any, Optional
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
-from typing import Any
+
+from api.monitor_utils import build_agent_event_funnel
+from core.knowledge_graph import build_sample_math_graph
+from core.observability import get_http_metrics_snapshot
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -129,3 +135,74 @@ async def get_progress(learner_id: str, request: Request) -> dict[str, Any]:
 async def health_check() -> dict[str, str]:
     """健康检查。"""
     return {"status": "ok"}
+
+
+@router.get("/monitor/summary")
+async def monitor_summary(
+    request: Request,
+    learner_id: Optional[str] = Query(None, description="用于掌握度分布的学习者 ID"),
+) -> dict[str, Any]:
+    """
+    竞赛可展示监控汇总：HTTP 延迟/错误率、LLM 指标、掌握度分布、Agent 事件漏斗。
+    """
+    orch = request.app.state.orchestrator
+    metrics = get_http_metrics_snapshot()
+    bus_stats = orch.get_event_bus_stats()
+    by_type = bus_stats.get("by_type") or {}
+    funnel = build_agent_event_funnel(by_type if isinstance(by_type, dict) else {})
+
+    mastery_payload: dict[str, Any] = {
+        "learner_id": learner_id,
+        "buckets": None,
+        "per_knowledge": None,
+    }
+    if learner_id and learner_id.strip():
+        lid = learner_id.strip()
+        progress = orch.get_learner_progress(lid)
+        kg = build_sample_math_graph()
+        if progress.get("status") != "no_data":
+            model = orch.learner_model_manager.get_or_create_model(lid)
+            per_knowledge = []
+            for kid, node in kg.nodes.items():
+                st = model.get_state(kid)
+                per_knowledge.append(
+                    {
+                        "id": kid,
+                        "name": node.name,
+                        "mastery": round(float(st.mastery), 4),
+                        "attempts": int(st.attempts),
+                    }
+                )
+            per_knowledge.sort(key=lambda x: x["mastery"])
+
+            def _bucket(m: float) -> str:
+                if m >= 0.85:
+                    return "精通(≥85%)"
+                if m >= 0.6:
+                    return "熟练(60–85%)"
+                if m >= 0.3:
+                    return "发展中(30–60%)"
+                return "待加强(<30%)"
+
+            buckets: dict[str, int] = {}
+            for row in per_knowledge:
+                b = _bucket(row["mastery"])
+                buckets[b] = buckets.get(b, 0) + 1
+            mastery_payload["buckets"] = buckets
+            mastery_payload["per_knowledge"] = per_knowledge
+        else:
+            mastery_payload["note"] = "该学习者暂无模型数据，请先答题或提问。"
+
+    return {
+        "generated_at": datetime.now().isoformat(),
+        "metrics": metrics,
+        "event_bus": {
+            "total_published": bus_stats.get("total_published"),
+            "total_handled": bus_stats.get("total_handled"),
+            "total_in_history": bus_stats.get("total_in_history"),
+            "dead_letter_count": bus_stats.get("dead_letter_count"),
+            "active_subscriptions": bus_stats.get("active_subscriptions"),
+        },
+        "agent_funnel": funnel,
+        "mastery": mastery_payload,
+    }

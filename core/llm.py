@@ -6,10 +6,12 @@
 3. 支持不同温度参数的调用
 """
 import logging
+import time
 from typing import Optional, Literal
 
 from openai import OpenAI
 from config.settings import settings
+from core.observability import record_llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        started = time.perf_counter()
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -59,9 +62,11 @@ class LLMClient:
             )
             result = response.choices[0].message.content
             logger.debug("LLM generation successful, prompt length: %d", len(prompt))
+            record_llm_call((time.perf_counter() - started) * 1000.0, failed=False)
             return result
         except Exception as e:
             logger.exception("LLM generation failed", exc_info=e)
+            record_llm_call((time.perf_counter() - started) * 1000.0, failed=True)
             return "抱歉，我现在无法回答你的问题，请稍后再试。"
 
     def generate_question(

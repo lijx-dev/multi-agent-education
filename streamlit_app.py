@@ -7,18 +7,25 @@
 4. 实时聊天
 5. 学习进度展示
 6. 知识图谱可视化
+7. 系统监控（竞赛演示：延迟、错误率、掌握度分布、Agent 漏斗）
 """
 import streamlit as st
 import asyncio
+import json
 import pandas as pd
 import plotly.express as px
+import urllib.error
+import urllib.request
+from urllib.parse import quote
 from datetime import datetime
 
 # 导入核心模块
+from api.monitor_utils import build_agent_event_funnel
 from api.orchestrator import AgentOrchestrator
 from core.knowledge_graph import build_sample_math_graph, KnowledgeGraph, KnowledgeNode
 from core.database import get_database
 from core.llm import get_llm_client
+from core.observability import get_http_metrics_snapshot
 
 # 页面配置
 st.set_page_config(
@@ -91,7 +98,7 @@ with st.sidebar:
         st.success("聊天记录已清空！")
 
 # 主界面
-tab1, tab2, tab3 = st.tabs(["💬 学习聊天", "📝 答题练习", "📊 学习进度"])
+tab1, tab2, tab3, tab4 = st.tabs(["💬 学习聊天", "📝 答题练习", "📊 学习进度", "📡 系统监控"])
 
 # --- Tab 1: 学习聊天 ---
 with tab1:
@@ -405,6 +412,144 @@ with tab3:
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("还没有学习历史记录")
+
+# --- Tab 4: 系统监控（竞赛可展示）---
+with tab4:
+    st.header("📡 系统监控")
+    st.caption(
+        "展示 HTTP 接口延迟与错误率、LLM 调用成功率、当前学习者的掌握度分布，以及基于事件总线的多 Agent 协作「漏斗」视图。"
+    )
+    st.info("请先启动 FastAPI（`uvicorn api.main:app --port 8000`），再点击「刷新监控数据」拉取 `/api/v1/monitor/summary`；未启动时仍可查看本页面内嵌进程的事件与掌握度。")
+
+    api_base = st.text_input(
+        "监控 API 根地址（需先启动 FastAPI，默认 8000 端口）",
+        value="http://127.0.0.1:8000",
+        help="仅当后端运行时，HTTP 延迟等指标才有数据；离线模式下仍可看本进程 EventBus 与掌握度。",
+    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        refresh = st.button("🔄 刷新监控数据", use_container_width=True)
+    with col_b:
+        show_raw = st.checkbox("显示原始 JSON", value=False)
+
+    if "monitor_cache" not in st.session_state:
+        st.session_state.monitor_cache = None
+
+    summary = st.session_state.monitor_cache
+    fetch_error = None
+    if refresh:
+        url = f"{api_base.rstrip('/')}/api/v1/monitor/summary?learner_id={quote(st.session_state.learner_id)}"
+        try:
+            with urllib.request.urlopen(url, timeout=8) as resp:
+                summary = json.loads(resp.read().decode("utf-8"))
+            st.session_state.monitor_cache = summary
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
+            fetch_error = str(e)
+            st.session_state.monitor_cache = None
+        summary = st.session_state.monitor_cache
+
+    if fetch_error:
+        st.warning(f"无法连接监控 API（将使用本进程离线数据）：{fetch_error}")
+
+    metrics = (summary or {}).get("metrics") if summary else get_http_metrics_snapshot()
+    if not metrics:
+        metrics = get_http_metrics_snapshot()
+    http_m = metrics.get("http", {})
+    llm_m = metrics.get("llm", {})
+    by_path = metrics.get("by_path") or {}
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("HTTP 请求数", http_m.get("total_requests", 0))
+    with m2:
+        st.metric("HTTP 错误率", f"{(http_m.get('error_rate') or 0) * 100:.2f}%")
+    with m3:
+        st.metric("P95 延迟(ms)", f"{http_m.get('p95_latency_ms') or 0:.1f}")
+    with m4:
+        st.metric("LLM 成功率", f"{(llm_m.get('success_rate') or 0) * 100:.1f}%")
+
+    if by_path:
+        path_df = pd.DataFrame(
+            [{"path": k, **v} for k, v in by_path.items()]
+        ).sort_values("avg_latency_ms", ascending=False).head(12)
+        st.subheader("接口延迟（Top 路径）")
+        fig_lat = px.bar(
+            path_df,
+            x="path",
+            y="avg_latency_ms",
+            title="各路径平均延迟（ms）",
+            labels={"path": "路径", "avg_latency_ms": "平均延迟(ms)"},
+        )
+        st.plotly_chart(fig_lat, use_container_width=True)
+
+    local_bus = st.session_state.orchestrator.get_event_bus_stats()
+    bus = (summary or {}).get("event_bus") if summary else {
+        "total_published": local_bus.get("total_published"),
+        "total_handled": local_bus.get("total_handled"),
+        "dead_letter_count": local_bus.get("dead_letter_count"),
+    }
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        st.metric("事件发布", bus.get("total_published") or 0)
+    with b2:
+        st.metric("事件处理", bus.get("total_handled") or 0)
+    with b3:
+        st.metric("死信", bus.get("dead_letter_count") or 0)
+
+    if summary and summary.get("agent_funnel"):
+        funnel_rows = summary["agent_funnel"]
+    else:
+        by_type = local_bus.get("by_type") or {}
+        funnel_rows = build_agent_event_funnel(by_type if isinstance(by_type, dict) else {})
+    funnel_df = pd.DataFrame([{"阶段": r["stage"], "事件量": r["count"]} for r in funnel_rows])
+    st.subheader("Agent 事件漏斗（协作活跃度）")
+    fig_fun = px.bar(
+        funnel_df,
+        x="事件量",
+        y="阶段",
+        orientation="h",
+        title="多 Agent 协作事件聚合（按阶段，条形图便于各版本 Plotly 展示）",
+    )
+    st.plotly_chart(fig_fun, use_container_width=True)
+
+    st.subheader("掌握度分布")
+    mastery_info = (summary or {}).get("mastery") if summary else None
+    if not mastery_info or mastery_info.get("per_knowledge") is None:
+        prog = st.session_state.orchestrator.get_learner_progress(st.session_state.learner_id)
+        if prog.get("status") == "no_data":
+            st.info("暂无掌握度数据：请先完成答题或聊天，或启动 API 后刷新。")
+        else:
+            model = st.session_state.orchestrator.learner_model_manager.get_or_create_model(
+                st.session_state.learner_id
+            )
+            rows = []
+            for kid, node in knowledge_graph.nodes.items():
+                stt = model.get_state(kid)
+                rows.append({"知识点": node.name, "掌握度": float(stt.mastery)})
+            mdf = pd.DataFrame(rows).sort_values("掌握度")
+            fig_m = px.histogram(
+                mdf,
+                x="掌握度",
+                nbins=12,
+                title="知识点掌握度分布（当前学习者）",
+            )
+            st.plotly_chart(fig_m, use_container_width=True)
+            st.dataframe(mdf, use_container_width=True, hide_index=True)
+    else:
+        buckets = mastery_info.get("buckets") or {}
+        if buckets:
+            bdf = pd.DataFrame([{"区间": k, "知识点数": v} for k, v in buckets.items()])
+            fig_b = px.bar(bdf, x="区间", y="知识点数", title="掌握度区间分布")
+            st.plotly_chart(fig_b, use_container_width=True)
+        pk = mastery_info.get("per_knowledge") or []
+        if pk:
+            pdf = pd.DataFrame(pk)
+            fig_h = px.histogram(pdf, x="mastery", nbins=12, title="掌握度直方图")
+            st.plotly_chart(fig_h, use_container_width=True)
+            st.dataframe(pdf, use_container_width=True, hide_index=True)
+
+    if show_raw and summary:
+        st.json(summary)
 
 # 自动跳转到进度页面（如果用户点击了快速查看）
 if st.session_state.show_progress:
