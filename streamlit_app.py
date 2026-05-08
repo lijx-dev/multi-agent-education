@@ -8,6 +8,7 @@
 5. 学习进度展示
 6. 知识图谱可视化
 7. 系统监控（竞赛演示：延迟、错误率、掌握度分布、Agent 漏斗）
+8. 拍照错题本（新增）
 """
 import streamlit as st
 import asyncio
@@ -98,7 +99,7 @@ with st.sidebar:
         st.success("聊天记录已清空！")
 
 # 主界面
-tab1, tab2, tab3, tab4 = st.tabs(["💬 学习聊天", "📝 答题练习", "📊 学习进度", "📡 系统监控"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["💬 学习聊天", "📝 答题练习", "📊 学习进度", "📡 系统监控", "📕 错题本"])
 
 # --- Tab 1: 学习聊天 ---
 with tab1:
@@ -603,6 +604,205 @@ with tab4:
 
     if show_raw and summary:
         st.json(summary)
+
+# --- Tab 5: 错题本（新增）---
+with tab5:
+    st.header("📕 拍照错题本")
+    st.caption("拍照上传错题，AI自动识别、分析错因、生成巩固练习")
+
+    # 初始化错题本相关的session state
+    if "wrong_questions" not in st.session_state:
+        st.session_state.wrong_questions = []
+    if "selected_question" not in st.session_state:
+        st.session_state.selected_question = None
+    if "ocr_result" not in st.session_state:
+        st.session_state.ocr_result = None
+
+    # 错题统计
+    col1, col2 = st.columns(2)
+    with col1:
+        wrong_count = st.session_state.orchestrator.get_wrong_questions_count(st.session_state.learner_id)
+        st.metric("错题总数", wrong_count)
+    with col2:
+        reviewed_count = sum(1 for q in st.session_state.wrong_questions if q.get("reviewed", False))
+        st.metric("已复习", reviewed_count)
+
+    st.divider()
+
+    # 上传错题区域
+    st.subheader("📸 上传错题")
+    col_upload1, col_upload2 = st.columns(2)
+    
+    with col_upload1:
+        uploaded_file = st.file_uploader("选择图片文件", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+        
+        if uploaded_file is not None:
+            # 显示上传的图片
+            st.image(uploaded_file, caption="上传的图片", use_column_width=True)
+            
+            # 保存图片到临时文件
+            import os
+            from pathlib import Path
+            
+            upload_dir = Path("uploads")
+            upload_dir.mkdir(exist_ok=True)
+            image_path = str(upload_dir / f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
+            
+            with open(image_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            st.session_state.uploaded_image_path = image_path
+
+    with col_upload2:
+        st.subheader("题目信息")
+        user_answer = st.text_input("你的答案（可选）")
+        error_type = st.selectbox(
+            "错误类型",
+            ("unknown", "concept", "careless"),
+            index=0,
+            format_func=lambda x: {
+                "concept": "概念不清",
+                "careless": "粗心失误",
+                "unknown": "不确定",
+            }[x],
+        )
+        
+        if st.button("🚀 上传并识别", type="primary", use_container_width=True):
+            if "uploaded_image_path" in st.session_state:
+                with st.spinner("正在识别图片中的题目..."):
+                    try:
+                        result = st.session_state.orchestrator.upload_wrong_question(
+                            learner_id=st.session_state.learner_id,
+                            image_path=st.session_state.uploaded_image_path,
+                            knowledge_id=None,  # 自动分析知识点
+                            user_answer=user_answer,
+                            error_type=error_type
+                        )
+                        
+                        if result.get("success"):
+                            st.success(result.get("message", "上传成功！"))
+                            
+                            # 显示识别结果
+                            st.subheader("识别结果")
+                            st.write("**题目文本：**", result.get("question_text"))
+                            if result.get("correct_answer"):
+                                st.write("**正确答案：**", result.get("correct_answer"))
+                            if result.get("analysis"):
+                                st.write("**解析：**", result.get("analysis"))
+                            
+                            # 显示生成的练习题
+                            exercises = result.get("exercises", [])
+                            if exercises:
+                                st.subheader("📝 生成的巩固练习题")
+                                for i, ex in enumerate(exercises, 1):
+                                    with st.expander(f"练习题 {i}"):
+                                        st.write(f"**题目：** {ex.get('question_text')}")
+                                        st.write(f"**答案：** {ex.get('correct_answer')}")
+                            
+                            # 刷新错题列表
+                            st.session_state.wrong_questions = st.session_state.orchestrator.get_wrong_questions(
+                                st.session_state.learner_id
+                            )
+                        else:
+                            st.error(result.get("error", "上传失败"))
+                    
+                    except Exception as e:
+                        st.error(f"上传失败：{str(e)}")
+            else:
+                st.warning("请先上传图片")
+
+    st.divider()
+
+    # 错题列表
+    st.subheader("📋 我的错题")
+    
+    # 刷新按钮
+    if st.button("🔄 刷新错题列表", use_container_width=True):
+        st.session_state.wrong_questions = st.session_state.orchestrator.get_wrong_questions(
+            st.session_state.learner_id
+        )
+    
+    # 显示错题列表
+    if st.session_state.wrong_questions:
+        for question in st.session_state.wrong_questions:
+            with st.expander(f"📝 {question.get('question_text', '')[:50]}..."):
+                col_q1, col_q2 = st.columns([2, 1])
+                
+                with col_q1:
+                    st.write("**题目：**", question.get("question_text"))
+                    if question.get("user_answer"):
+                        st.write("**你的答案：**", question.get("user_answer"))
+                    if question.get("correct_answer"):
+                        st.write("**正确答案：**", question.get("correct_answer"))
+                    if question.get("analysis"):
+                        st.write("**解析：**", question.get("analysis"))
+                    if question.get("knowledge_name"):
+                        st.write("**知识点：**", question.get("knowledge_name"))
+                    if question.get("created_at"):
+                        st.write("**添加时间：**", question.get("created_at"))
+                
+                with col_q2:
+                    st.write("**复习次数：**", question.get("review_count", 0))
+                    status = "已复习" if question.get("reviewed", False) else "待复习"
+                    st.write("**状态：**", status)
+                    
+                    # 练习按钮
+                    if st.button(f"🎯 练习此题", key=f"practice_{question['id']}", use_container_width=True):
+                        st.session_state.selected_question = question
+                        st.rerun()
+    
+    else:
+        st.info("还没有错题记录，点击上方按钮上传错题吧！")
+
+    # 错题练习详情
+    if st.session_state.selected_question:
+        question = st.session_state.selected_question
+        st.divider()
+        st.subheader(f"🎯 练习：{question.get('question_text', '')[:30]}...")
+        
+        st.write("**题目：**", question.get("question_text"))
+        if question.get("correct_answer"):
+            st.write("**正确答案：**", question.get("correct_answer"))
+        
+        user_answer = st.text_input("输入你的答案")
+        is_correct = st.radio("你答对了吗？", ("是的", "不是"), index=1)
+        
+        if st.button("提交答案", type="primary", use_container_width=True):
+            result = st.session_state.orchestrator.practice_wrong_question(
+                question_id=question["id"],
+                learner_id=st.session_state.learner_id,
+                user_answer=user_answer,
+                is_correct=(is_correct == "是的")
+            )
+            
+            if result.get("success"):
+                st.success("练习记录已保存！")
+                # 刷新错题列表
+                st.session_state.wrong_questions = st.session_state.orchestrator.get_wrong_questions(
+                    st.session_state.learner_id
+                )
+                # 清除选中的题目
+                st.session_state.selected_question = None
+            else:
+                st.error(result.get("error", "保存失败"))
+    
+    # 删除错题功能
+    st.divider()
+    st.subheader("🗑️ 删除错题")
+    if st.session_state.wrong_questions:
+        question_ids = [(q["id"], q["question_text"][:30] + "...") for q in st.session_state.wrong_questions]
+        selected_id = st.selectbox("选择要删除的错题", question_ids, format_func=lambda x: x[1])
+        
+        if st.button("删除选中的错题", use_container_width=True, type="secondary"):
+            if selected_id:
+                success = st.session_state.orchestrator.delete_wrong_question(selected_id[0])
+                if success:
+                    st.success("删除成功！")
+                    st.session_state.wrong_questions = st.session_state.orchestrator.get_wrong_questions(
+                        st.session_state.learner_id
+                    )
+                else:
+                    st.error("删除失败")
 
 # 自动跳转到进度页面（如果用户点击了快速查看）
 if st.session_state.show_progress:

@@ -16,6 +16,7 @@ from core.learner_model_manager import get_learner_model_manager
 from core.database import get_database
 from core.knowledge_graph import build_sample_math_graph
 from core.event_bus import Event, EventType
+from core.wrong_question_manager import get_wrong_question_manager
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class AgentOrchestrator:
         self.learner_model_manager = get_learner_model_manager()
         self.db = get_database()
         self.knowledge_graph = build_sample_math_graph()
+        self.wrong_question_manager = get_wrong_question_manager()
 
         # 保留原有的Agent实例（用于兼容和辅助功能）
         from agents import (
@@ -351,3 +353,117 @@ class AgentOrchestrator:
             dict: 统计信息
         """
         return self.event_bus.get_stats()
+
+    # ==================== 错题本相关方法（新增）====================
+
+    def upload_wrong_question(
+        self,
+        learner_id: str,
+        image_path: str = None,
+        image_base64: str = None,
+        knowledge_id: str = None,
+        user_answer: str = None,
+        error_type: str = "unknown"
+    ) -> Dict[str, Any]:
+        """
+        上传错题图片，识别题目并保存到错题本。
+
+        Args:
+            learner_id: 学习者ID
+            image_path: 图片文件路径
+            image_base64: Base64编码的图片数据
+            knowledge_id: 知识点ID（可选）
+            user_answer: 用户答案（可选）
+            error_type: 错误类型（concept/careless/unknown）
+
+        Returns:
+            Dict[str, Any]: 处理结果
+        """
+        return self.wrong_question_manager.upload_wrong_question(
+            learner_id=learner_id,
+            image_path=image_path,
+            image_base64=image_base64,
+            knowledge_id=knowledge_id,
+            user_answer=user_answer,
+            error_type=error_type
+        )
+
+    def get_wrong_questions(self, learner_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        获取学习者的错题列表。
+
+        Args:
+            learner_id: 学习者ID
+            limit: 返回数量限制
+
+        Returns:
+            List[Dict[str, Any]]: 错题列表
+        """
+        return self.wrong_question_manager.get_wrong_questions(learner_id, limit)
+
+    def get_wrong_question_detail(self, question_id: int) -> Optional[Dict[str, Any]]:
+        """
+        获取错题详情，包括生成的练习题。
+
+        Args:
+            question_id: 错题ID
+
+        Returns:
+            Optional[Dict[str, Any]]: 错题详情
+        """
+        return self.wrong_question_manager.get_wrong_question_detail(question_id)
+
+    def practice_wrong_question(
+        self,
+        question_id: int,
+        learner_id: str,
+        user_answer: str,
+        is_correct: bool,
+        time_spent: int = None
+    ) -> Dict[str, Any]:
+        """
+        练习错题，记录答题结果。
+
+        Args:
+            question_id: 错题ID
+            learner_id: 学习者ID
+            user_answer: 用户答案
+            is_correct: 是否正确
+            time_spent: 用时（秒）
+
+        Returns:
+            Dict[str, Any]: 练习结果
+        """
+        return self.wrong_question_manager.practice_wrong_question(
+            question_id=question_id,
+            learner_id=learner_id,
+            user_answer=user_answer,
+            is_correct=is_correct,
+            time_spent=time_spent
+        )
+
+    def delete_wrong_question(self, question_id: int) -> bool:
+        """
+        删除错题。
+
+        Args:
+            question_id: 错题ID
+
+        Returns:
+            bool: 是否成功
+        """
+        return self.wrong_question_manager.delete_wrong_question(question_id)
+
+    def get_wrong_questions_count(self, learner_id: str) -> int:
+        """
+        获取学习者的错题数量。
+
+        Args:
+            learner_id: 学习者ID
+
+        Returns:
+            int: 错题数量
+        """
+        return self.wrong_question_manager.get_wrong_questions_count(learner_id)
+
+    # ==================== 错题本相关方法结束 ====================

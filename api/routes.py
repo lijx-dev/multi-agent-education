@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, File, UploadFile
 from pydantic import BaseModel
 
 from api.monitor_utils import build_agent_event_funnel
@@ -222,3 +222,284 @@ async def monitor_summary(
         "agent_funnel": funnel,
         "mastery": mastery_payload,
     }
+
+
+# ==================== 错题本相关路由（新增）====================
+
+class WrongQuestionUploadRequest(BaseModel):
+    learner_id: str
+    knowledge_id: Optional[str] = None
+    user_answer: Optional[str] = None
+    error_type: str = "unknown"
+
+
+class WrongQuestionPracticeRequest(BaseModel):
+    learner_id: str
+    user_answer: str
+    is_correct: bool
+    time_spent: Optional[int] = None
+
+
+@router.post("/wrong-question/upload")
+async def upload_wrong_question(
+    req: WrongQuestionUploadRequest,
+    request: Request,
+    file: Optional[UploadFile] = File(None)
+) -> dict[str, Any]:
+    """
+    上传错题图片，识别题目并保存到错题本。
+    
+    Args:
+        learner_id: 学习者ID
+        knowledge_id: 知识点ID（可选，不提供则自动分析）
+        user_answer: 用户答案（可选）
+        error_type: 错误类型（concept/careless/unknown）
+        file: 图片文件（可选，与image_base64二选一）
+    
+    Returns:
+        处理结果，包含题目信息、解析、生成的练习题
+    """
+    try:
+        if not req.learner_id.strip():
+            raise ValueError("learner_id 不能为空")
+
+        # 处理图片数据
+        image_path = None
+        image_base64 = None
+        
+        if file:
+            # 保存上传的图片
+            import os
+            from pathlib import Path
+            
+            upload_dir = Path("uploads")
+            upload_dir.mkdir(exist_ok=True)
+            image_path = str(upload_dir / f"{req.learner_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
+            
+            with open(image_path, "wb") as f:
+                f.write(await file.read())
+
+        result = request.app.state.orchestrator.upload_wrong_question(
+            learner_id=req.learner_id,
+            image_path=image_path,
+            image_base64=image_base64,
+            knowledge_id=req.knowledge_id,
+            user_answer=req.user_answer,
+            error_type=req.error_type
+        )
+
+        return result
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("upload wrong question failed learner=%s", req.learner_id)
+        raise HTTPException(status_code=500, detail=f"上传错题失败：{str(e)}")
+
+
+@router.post("/wrong-question/upload-base64")
+async def upload_wrong_question_base64(
+    learner_id: str,
+    image_base64: str,
+    knowledge_id: Optional[str] = None,
+    user_answer: Optional[str] = None,
+    error_type: str = "unknown",
+    request: Request = None
+) -> dict[str, Any]:
+    """
+    通过Base64编码上传错题图片。
+    
+    Args:
+        learner_id: 学习者ID
+        image_base64: Base64编码的图片数据
+        knowledge_id: 知识点ID（可选）
+        user_answer: 用户答案（可选）
+        error_type: 错误类型（concept/careless/unknown）
+    
+    Returns:
+        处理结果
+    """
+    try:
+        if not learner_id.strip():
+            raise ValueError("learner_id 不能为空")
+        if not image_base64.strip():
+            raise ValueError("image_base64 不能为空")
+
+        result = request.app.state.orchestrator.upload_wrong_question(
+            learner_id=learner_id,
+            image_path=None,
+            image_base64=image_base64,
+            knowledge_id=knowledge_id,
+            user_answer=user_answer,
+            error_type=error_type
+        )
+
+        return result
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("upload wrong question base64 failed learner=%s", learner_id)
+        raise HTTPException(status_code=500, detail=f"上传错题失败：{str(e)}")
+
+
+@router.get("/wrong-questions/{learner_id}")
+async def get_wrong_questions(
+    learner_id: str,
+    limit: int = Query(50, description="返回数量限制"),
+    request: Request = None
+) -> dict[str, Any]:
+    """
+    获取学习者的错题列表。
+    
+    Args:
+        learner_id: 学习者ID
+        limit: 返回数量限制
+    
+    Returns:
+        错题列表
+    """
+    try:
+        if not learner_id.strip():
+            raise ValueError("learner_id 不能为空")
+
+        questions = request.app.state.orchestrator.get_wrong_questions(learner_id, limit)
+        
+        return {
+            "learner_id": learner_id,
+            "questions": questions,
+            "count": len(questions)
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("get wrong questions failed learner=%s", learner_id)
+        raise HTTPException(status_code=500, detail="获取错题列表失败")
+
+
+@router.get("/wrong-question/{question_id}")
+async def get_wrong_question_detail(
+    question_id: int,
+    request: Request = None
+) -> dict[str, Any]:
+    """
+    获取错题详情，包括生成的练习题和练习记录。
+    
+    Args:
+        question_id: 错题ID
+    
+    Returns:
+        错题详情
+    """
+    try:
+        detail = request.app.state.orchestrator.get_wrong_question_detail(question_id)
+        
+        if not detail:
+            raise HTTPException(status_code=404, detail="错题不存在")
+        
+        return detail
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.exception("get wrong question detail failed question_id=%d", question_id)
+        raise HTTPException(status_code=500, detail="获取错题详情失败")
+
+
+@router.post("/wrong-question/{question_id}/practice")
+async def practice_wrong_question(
+    question_id: int,
+    req: WrongQuestionPracticeRequest,
+    request: Request = None
+) -> dict[str, Any]:
+    """
+    练习错题，记录答题结果。
+    
+    Args:
+        question_id: 错题ID
+        learner_id: 学习者ID
+        user_answer: 用户答案
+        is_correct: 是否正确
+        time_spent: 用时（秒）
+    
+    Returns:
+        练习结果
+    """
+    try:
+        if not req.learner_id.strip():
+            raise ValueError("learner_id 不能为空")
+
+        result = request.app.state.orchestrator.practice_wrong_question(
+            question_id=question_id,
+            learner_id=req.learner_id,
+            user_answer=req.user_answer,
+            is_correct=req.is_correct,
+            time_spent=req.time_spent
+        )
+
+        return result
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("practice wrong question failed question_id=%d", question_id)
+        raise HTTPException(status_code=500, detail="练习错题失败")
+
+
+@router.delete("/wrong-question/{question_id}")
+async def delete_wrong_question(
+    question_id: int,
+    request: Request = None
+) -> dict[str, Any]:
+    """
+    删除错题。
+    
+    Args:
+        question_id: 错题ID
+    
+    Returns:
+        删除结果
+    """
+    try:
+        success = request.app.state.orchestrator.delete_wrong_question(question_id)
+        
+        if success:
+            return {"success": True, "message": "删除成功"}
+        else:
+            return {"success": False, "message": "删除失败"}
+
+    except Exception as e:
+        logger.exception("delete wrong question failed question_id=%d", question_id)
+        raise HTTPException(status_code=500, detail="删除错题失败")
+
+
+@router.get("/wrong-questions/count/{learner_id}")
+async def get_wrong_questions_count(
+    learner_id: str,
+    request: Request = None
+) -> dict[str, Any]:
+    """
+    获取学习者的错题数量。
+    
+    Args:
+        learner_id: 学习者ID
+    
+    Returns:
+        错题数量
+    """
+    try:
+        if not learner_id.strip():
+            raise ValueError("learner_id 不能为空")
+
+        count = request.app.state.orchestrator.get_wrong_questions_count(learner_id)
+        
+        return {"learner_id": learner_id, "count": count}
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("get wrong questions count failed learner=%s", learner_id)
+        raise HTTPException(status_code=500, detail="获取错题数量失败")
+
+# ==================== 错题本相关路由结束 ====================
