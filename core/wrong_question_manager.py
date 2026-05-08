@@ -170,16 +170,11 @@ class WrongQuestionManager:
 4. 错因分析（如果有用户答案）：[分析用户可能的错误原因]
 """
 
-            response = self.llm.client.chat.completions.create(
-                model=self.llm.model_name,
-                messages=[
-                    {"role": "system", "content": "你是一位数学老师，擅长分析和解答数学题目。"},
-                    {"role": "user", "content": prompt}
-                ],
+            result_text = self.llm.generate(
+                prompt=prompt,
+                system_prompt="你是一位数学老师，擅长分析和解答数学题目。",
                 temperature=0.3
             )
-
-            result_text = response.choices[0].message.content.strip()
             
             # 解析LLM返回的结果
             result = {
@@ -257,16 +252,11 @@ class WrongQuestionManager:
 答案3：[正确答案]
 """
 
-            response = self.llm.client.chat.completions.create(
-                model=self.llm.model_name,
-                messages=[
-                    {"role": "system", "content": "你是一位数学老师，擅长根据现有题目生成类似的练习题。"},
-                    {"role": "user", "content": prompt}
-                ],
+            result_text = self.llm.generate(
+                prompt=prompt,
+                system_prompt="你是一位数学老师，擅长根据现有题目生成类似的练习题。",
                 temperature=0.5
             )
-
-            result_text = response.choices[0].message.content.strip()
             
             # 解析生成的练习题
             lines = result_text.split("\n")
